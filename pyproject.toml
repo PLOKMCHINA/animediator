@@ -1,0 +1,35 @@
+# 用 setuptools 而不是 hatchling：国内装包经常拉不到 hatchling，
+# 而 setuptools 通常是 pip 自带/已缓存的。少一个装不上的依赖就是少一个门槛。
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "animediator"
+version = "1.0.0"
+description = "把硬盘上命名混乱的动漫收藏整理成 Jellyfin 能认的媒体库（离线索引 + 可选语义层）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["anime", "jellyfin", "bangumi", "metadata", "media-library"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Video",
+  "Environment :: Console",
+]
+# 引擎本体零第三方依赖：只用标准库（sqlite3 / urllib / zipfile / tomllib）。
+# 语义层（认片名、判正片特典）是**可选外挂** —— 有算力的本地跑模型，
+# 没有的接外部 API，引擎侧代码一行不改。没配语义层时，不依赖它的命令照常工作。
+dependencies = []
+
+[project.optional-dependencies]
+# 语义层两种后端都走 OpenAI 兼容 HTTP（标准库 urllib 实现），不需要额外包。
+# 这个 extra 只给想跑测试/开发的人用。
+dev = ["pytest>=7"]
+
+[project.scripts]
+animediator = "animediator.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["animediator*"]

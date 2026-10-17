@@ -1,0 +1,75 @@
+# ══════════════════════════════════════════════════════════════
+#  AniMediator 配置
+#
+#  这个文件是**唯一**放环境相关信息的地方 —— 路径、盘位、Jellyfin 地址、
+#  语义层后端。代码里没有任何机器专有的字面量，所以换台机器只要改这里。
+#
+#  相对路径以本文件所在目录为基准。
+# ══════════════════════════════════════════════════════════════
+
+# ── 目录 ──
+work = "work"        # 中间产物（作业库、扫描结果、模型判断），断点重跑靠它
+data = "data"        # 离线索引：dump.zip 与 bgm.db
+vfs  = "vfs"         # 输出的虚拟库（只有符号链接，随时可删可重建）
+
+# ── 盘位：每个动漫盘一条 ──
+#   root       宿主上这个盘挂在哪（扫描走这里）
+#   container  容器里这个盘挂在哪（**软链目标写这里**）
+#   ⚠️ 链接要被容器里的 Jellyfin 解析，所以目标必须是容器视角的路径。
+#      单机直跑（不经 Docker）时两个填一样。
+[media.DISK1]
+root      = "/mnt/disk1"
+container = "/media/disk1"
+
+[media.DISK2]
+root      = "/mnt/disk2"
+container = "/media/disk2"
+
+# ── Jellyfin ──
+#   api_key 在 Jellyfin 控制台 → 高级 → API 密钥 里生成
+#   vfs_in_container 是本文件上面的 vfs 目录**在容器里**的路径
+[jellyfin]
+url              = "http://127.0.0.1:8096"
+api_key          = ""
+library          = "动漫"
+vfs_in_container = "/vfs"
+library_id       = ""
+
+# ── 语义层（可选外挂）──
+#   backend = "none"   不配模型。只影响需要"看懂片名"的命令，
+#                      其余命令（扫描、生成、报告）照常工作。
+#   backend = "openai" 任何 OpenAI 兼容接口，本地或云端都行。
+#
+#   有显卡/内存够 —— 本地跑，一分钱不花：
+#       backend  = "openai"
+#       base_url = "http://127.0.0.1:11434/v1"     # Ollama
+#       model    = "qwen2.5:14b"
+#       api_key  = "ollama"
+#
+#   没算力 —— 接云端：
+#       base_url = "https://api.deepseek.com/v1"
+#       api_key  = "sk-..."
+#       model    = "deepseek-chat"
+#
+#   ⚠️ 用**推理模型**（名字带 reason/thinking/r1）时加 disable_thinking = true，
+#      否则 token 全烧在推理上，返回的正文是空的，表现为"每次都失败"。
+[semantic]
+backend          = "none"
+base_url         = ""
+api_key          = ""
+model            = ""
+disable_thinking = false
+workers          = 8      # 并发数，按机器和 API 限流调
+timeout          = 240
+retries          = 10
+
+# ── 番组计划离线索引 ──
+#   allow_network = false 时完全不联网：本地索引查不到就诚实记成"待处理"，
+#   不会卡在等超时上。dump.zip 从 https://github.com/bangumi/Archive 取。
+[bgm]
+user_agent    = "animediator/1.0 (anime library organizer)"
+allow_network = true
+
+# ── 代理（可选）──
+#   api.bgm.tv 和 Cloudflare 后面的服务在国内有时连不上，需要时填这里。
+proxy = ""
