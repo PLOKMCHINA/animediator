@@ -4,16 +4,19 @@
 命中率是变好、变差、还是持平？
 """
 import json
+import os
 import sqlite3
 import sys
 
-sys.path.insert(0, "/root/animediator-pkg/src")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "src"))
 
 from animediator.textutil import norm_query as norm
 
-WORK = "/root/animediator/work/animediator.db"
-BGM = "/opt/animediator/data/bgm.db"
-BRAIN = "/root/animediator/work/brain_v1.jsonl"
+# 路径从环境变量取，默认按标准目录结构猜
+WORK = os.environ.get("AMI_WORK", "work") + "/animediator.db"
+BGM = os.environ.get("AMI_BGMDb", "data/bgm.db")
+BRAIN = os.environ.get("AMI_BRAIN", "work/brain_v1.jsonl")
 
 
 def candidates(rec):

@@ -155,8 +155,8 @@ animediator init --detect
 盘位探测：找到 2 个像媒体盘的挂载（视频数是浅层抽样）
   /srv/dev-disk-by-uuid-3c1a…  抽样 3992 个视频  →  容器内 /media/anime2
   /srv/dev-disk-by-uuid-fe23…  抽样  546 个视频  →  容器内 /media/anime1
-Jellyfin：http://127.0.0.1:8096（synapse 10.10.7）
-  发现已有的虚拟库挂载：/opt/animediator/vfs11 → /vfs
+Jellyfin：http://127.0.0.1:8096（MyNAS 10.10.7）
+  发现已有的虚拟库挂载：/srv/anime/vfs → /vfs
 语义层：探测到 Ollama，3 个模型，默认用 qwen2.5:14b
 代理：http://127.0.0.1:7890 在监听
 ```

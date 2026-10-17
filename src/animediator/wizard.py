@@ -427,6 +427,7 @@ def doctor_cmd(args=None):
         print("%s dump.zip 不在 %s" % (WARN, cfg.dump))
         print("        从 https://github.com/bangumi/Archive 下载后放进去，")
         print("        然后跑 `animediator bgm-build`")
+        warns.append("dump.zip")
     if cfg.bgm_db.exists():
         import sqlite3
         try:
@@ -440,6 +441,7 @@ def doctor_cmd(args=None):
             fails.append("bgm_db")
     else:
         print("%s bgm.db 还没建（%s）" % (WARN, cfg.bgm_db))
+        warns.append("bgm.db")
     if cfg.db.exists():
         import sqlite3
         try:
@@ -507,7 +509,10 @@ def doctor_cmd(args=None):
     if fails:
         print("有 %d 项不通：%s" % (len(fails), "、".join(fails)))
         return 1
-    print("没发现阻塞项。可以跑了：animediator run")
+    print("没发现阻塞项。可以开始：animediator scan")
     if warns:
         print("（%d 项提醒：%s）" % (len(warns), "、".join(warns)))
+        if "bgm.db" in warns or "dump.zip" in warns:
+            print("   ⚠️ 离线索引还没建 —— 扫描能跑，但认片（identify）之前必须先")
+            print("      `animediator bgm-build`，否则名字查不到一条。")
     return 0

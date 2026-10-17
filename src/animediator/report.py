@@ -8,7 +8,7 @@
     ep_enrich()  问 Jellyfin 要集级真实状态（有没有集号/中文名/ProviderIds）
     ep_split()   按季拆开统计：正片(Season>=1) vs 特典(Season 0)
     html()       status.json → 自包含单文件 HTML（数据内嵌，不依赖任何服务）
-    listing()    status.json → csv / md 清单（给博士看的可读版本）
+    listing()    status.json → csv / md 清单（方便人读的版本）
 
 五个函数各自对应旧工程的一个独立脚本，逻辑一行不改地迁过来的；
 main() 只是按顺序把它们串起来跑一遍。
@@ -437,7 +437,7 @@ document.querySelectorAll('.bid').forEach(inp=>{
 document.getElementById('exp').onclick=()=>{
   const n=Object.keys(changed).length;
   document.getElementById('bar').classList.add('show');
-  document.getElementById('msg').textContent=n?('共 '+n+' 处改动，复制下面这行交给可露希尔：'):'没有改动';
+  document.getElementById('msg').textContent=n?('共 '+n+' 处改动，复制下面这行：'):'没有改动';
   document.getElementById('out').textContent=n?JSON.stringify(changed):'';
 };
 apply();
@@ -467,7 +467,7 @@ apply();
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# work/status.json → 清单 csv / md（给博士看的可读版本）
+# work/status.json → 清单 csv / md（方便人读的版本）
 # （原 mk_list.py）
 # ─────────────────────────────────────────────────────────────────────────────
 def listing(args=None):

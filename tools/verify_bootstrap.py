@@ -5,21 +5,25 @@
     bgm.db 52.5% 单值命中
 """
 import json
+import os
 import sqlite3
 import sys
 import time
 
-sys.path.insert(0, "/root/animediator-pkg/src")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "src"))
 
 from animediator.config import load
 from animediator import db as workdb
 from animediator.bgm.aodb import build_from_bgm
 from animediator.textutil import norm_query as norm
 
-BRAIN = "/root/animediator/work/brain_v1.jsonl"
-TMP = "/tmp/ami-bootstrap.db"
+BRAIN = os.environ.get("AMI_BRAIN", "work/brain_v1.jsonl")
+TMP = os.environ.get("AMI_TMP_DB", "/tmp/ami-bootstrap.db")
 
-cfg = load("/tmp/ami-real.toml", {"work": "/tmp/ami-bootstrap-work"})
+# 用一份指向真实数据的配置；没有就用当前目录
+cfg = load(os.environ.get("AMI_CONFIG"),
+           {"work": os.environ.get("AMI_BOOT_WORK", "/tmp/ami-bootstrap-work")})
 
 con = sqlite3.connect(TMP)
 con.executescript(workdb.SCHEMA)
