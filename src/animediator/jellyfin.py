@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -32,11 +33,10 @@ import urllib.request
 
 from .config import FLAGS, get as get_cfg
 
-# TODO(迁移存疑): deploy_jellyfin.sh 里 docker 镜像与 PUID/PGID/代理等是
-#   机器专有的硬编码，迁过来只能先原样保留为默认值（可用配置覆盖），
-#   两块媒体盘的挂载改走 cfg.media。
+# Jellyfin 容器的默认参数。都可以在 [jellyfin] 段用同名键覆盖：
+# container_name / image / config_dir / cache_dir / puid / pgid / tz。
 _DOCKER_DEFAULTS = {
-    "image": "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/nyanmisaka/jellyfin:260326-amd64",
+    "image": "jellyfin/jellyfin",
     "name": "jellyfin",
     "config_dir": "/opt/jellyfin/config",
     "cache_dir": "/opt/jellyfin/cache",
@@ -76,6 +76,23 @@ def call(method, path, body=None, **q):
             return json.loads(raw) if raw.strip().startswith(("{", "[")) else raw
     except urllib.error.HTTPError as e:
         return {"__error__": e.code, "body": e.read().decode()[:300]}
+
+
+def _folders():
+    """取媒体库列表。API 报错时给明确说明并退出，不把错误体当列表用。"""
+    libs = call("GET", "/Library/VirtualFolders")
+    if isinstance(libs, dict) and "__error__" in libs:
+        code = libs["__error__"]
+        msg = ["读取媒体库失败：HTTP %s" % code]
+        if code in (401, 403):
+            msg.append("  api_key 无效或没有权限 —— 在 Jellyfin 控制台 → 高级 → API 密钥 里重新生成")
+        elif code == 404:
+            msg.append("  检查 [jellyfin] url 是否指到 Jellyfin 本体")
+        msg.append("  返回内容：%s" % str(libs.get("body", ""))[:200])
+        raise SystemExit("\n".join(msg))
+    if not isinstance(libs, list):
+        raise SystemExit("Jellyfin 返回的不是媒体库列表，先确认 [jellyfin] url 是否正确")
+    return [L for L in libs if isinstance(L, dict)]
 
 
 def _snapshot(name: str, obj) -> str | None:
@@ -124,10 +141,24 @@ def wire(args=None):
 
     apply = not FLAGS.dry_run
     libs = api("/Library/VirtualFolders")
-    lib = next((L for L in libs if L["Name"] == LIB), None)
+    if isinstance(libs, dict) and "__error__" in libs:
+        code = libs["__error__"]
+        print("读取媒体库失败：HTTP %s" % code)
+        if code in (401, 403):
+            print("  api_key 无效或没有权限 —— 在 Jellyfin 控制台 → 高级 → API 密钥 重新生成一个")
+        elif code == 404:
+            print("  服务地址对不对？当前是 %s" % BASE)
+        print("  返回内容：%s" % libs.get("body", "")[:200])
+        return 1
+    if not isinstance(libs, list):
+        print("Jellyfin 返回的内容不是媒体库列表，先确认服务地址：%s" % BASE)
+        return 1
+    lib = next((L for L in libs if isinstance(L, dict) and L.get("Name") == LIB), None)
     if not lib:
-        print("找不到库", LIB)
-        return
+        names = [L.get("Name") for L in libs if isinstance(L, dict)]
+        print("找不到库 %s。现有媒体库：%s" % (LIB, ", ".join(str(n) for n in names) or "（没有）"))
+        print("  在 [jellyfin] 段用 library 指定库名，或先在 Jellyfin 里建好这个库")
+        return 1
     o = lib["LibraryOptions"]
     old_paths = [p["Path"] for p in o["PathInfos"]]
     print("库 %s（ItemId %s）" % (LIB, lib["ItemId"]))
@@ -210,7 +241,7 @@ def rebuild(args=None):
     WORK = cfg.work
 
     # ── 破坏性操作安全网 ──
-    libs = call("GET", "/Library/VirtualFolders")
+    libs = _folders()
     old = None
     for l in libs:
         if l.get("Name") == NAME:
@@ -246,7 +277,7 @@ def rebuild(args=None):
     print("  →", "ok" if not (isinstance(r, dict) and r.get("__error__")) else r)
     time.sleep(2)
 
-    libs2 = call("GET", "/Library/VirtualFolders")
+    libs2 = _folders()
     new = None
     for l in libs2:
         if l.get("Name") == NAME:
@@ -268,7 +299,7 @@ def rebuild(args=None):
     print("  写回 LibraryOptions →", "ok" if not (isinstance(r, dict) and r.get("__error__")) else r)
 
     # 复验
-    libs3 = call("GET", "/Library/VirtualFolders")
+    libs3 = _folders()
     for l in libs3:
         if l.get("Name") == NAME:
             o3 = l.get("LibraryOptions") or {}
@@ -296,7 +327,7 @@ def grouping(args=None):
     """关掉 EnableAutomaticSeriesGrouping —— 否则 银魂/银魂. 这类续作的 Season 会被合并"""
     _require_api_key()
 
-    folders = call("GET", "/Library/VirtualFolders")
+    folders = _folders()
     NAME = get_cfg().jellyfin["library"]
     lib = next(l for l in folders if l.get("Name") == NAME)
     opts = lib["LibraryOptions"]
@@ -310,7 +341,7 @@ def grouping(args=None):
     opts["EnableAutomaticSeriesGrouping"] = False
     call("POST", "/Library/VirtualFolders/LibraryOptions",
          {"Id": lib["ItemId"], "LibraryOptions": opts})
-    after = call("GET", "/Library/VirtualFolders")
+    after = _folders()
     chk = next(l for l in after if l.get("Name") == NAME)["LibraryOptions"]
     print("EnableAutomaticSeriesGrouping: %s → %s（回读确认 %s）"
           % (before, False, chk.get("EnableAutomaticSeriesGrouping")))
@@ -356,7 +387,7 @@ def images(args=None):
             except Exception as e:
                 print("停止 %s 失败：%s" % (t.get("Key"), e))
 
-    libs = call("GET", "/Library/VirtualFolders")
+    libs = _folders()
     tgt = None
     for l in libs:
         if l.get("Name") == LIB_NAME:
@@ -402,7 +433,7 @@ def images(args=None):
     print("  SaveLocalMetadata       =", o["SaveLocalMetadata"])
 
     # 复验
-    libs2 = call("GET", "/Library/VirtualFolders")
+    libs2 = _folders()
     for l in libs2:
         if l.get("Name") == LIB_NAME:
             o2 = l.get("LibraryOptions") or {}
@@ -500,7 +531,7 @@ def scan(args=None):
     if p.is_file():
         lib_id = p.read_text().strip()
     else:
-        libs = call("GET", "/Library/VirtualFolders")
+        libs = _folders()
         for l in libs:
             if l.get("Name") == cfg.jellyfin["library"]:
                 lib_id = l["ItemId"]
@@ -538,11 +569,29 @@ def scan(args=None):
 
 # ── deploy  ← deploy_jellyfin.sh（换挂载）+ 串联 ──────────────────────
 
-def recreate_container(args=None):
-    """deploy_jellyfin.sh 的 Python 版：重建 Jellyfin 容器，把宿主 cfg.vfs 挂到 /vfs:ro。
+def _container_mounts(name: str) -> list[str] | None:
+    """返回容器已挂载的宿主机路径；容器不存在时返回 None。"""
+    try:
+        r = subprocess.run(["docker", "inspect", "-f", "{{json .Mounts}}", name],
+                           capture_output=True, text=True, timeout=20)
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        return [m.get("Source", "") for m in json.loads(r.stdout or "[]")]
+    except (ValueError, AttributeError):
+        return None
 
-    除 /vfs 外所有参数逐项照抄旧脚本（镜像/网络/重启策略/挂载/环境变量）。
-    配置在 /opt/jellyfin/config，重建不丢。
+
+def recreate_container(args=None):
+    """把宿主 cfg.vfs 挂进 Jellyfin 容器（容器内路径 cfg.jellyfin.vfs_in_container）。
+
+    容器已经在挂载这个目录时什么都不做。容器存在但没挂载时，默认只打印需要
+    补的挂载参数并停下，不替用户删容器——重建容器会丢掉用户自己加的挂载和
+    环境变量，必须显式 --recreate-container 才做。容器不存在时直接创建。
+
+    镜像、容器名、配置目录都可在 [jellyfin] 段覆盖。
     """
     cfg = get_cfg()
     jf = cfg.jellyfin
@@ -553,10 +602,36 @@ def recreate_container(args=None):
     vfs_host = str(cfg.vfs)
     vfs_in = jf.get("vfs_in_container") or "/vfs"
 
-    import os
     if not os.path.isdir(vfs_host):
-        print("❌ 目录不存在：%s" % vfs_host)
+        print("目录不存在：%s" % vfs_host)
+        print("  先跑 `animediator materialize` 生成虚拟库")
         return 1
+
+    mounts = _container_mounts(name)
+    if mounts is not None and vfs_host in mounts:
+        print("容器 %s 已经挂载 %s，跳过重建" % (name, vfs_host))
+        return 0
+
+    if mounts is None and not os.path.isdir(cfg_dir):
+        print("容器 %s 不存在，配置目录 %s 也不存在。" % (name, cfg_dir))
+        print("  照现在这样建会得到一个全新的空 Jellyfin，原来的库和配置都看不到。")
+        print("  确认要新建的话，把配置目录指对，或在 [jellyfin] 段里写明：")
+        print('      config_dir = "/你的/jellyfin/config"')
+        print('      cache_dir  = "/你的/jellyfin/cache"')
+        return 2
+
+    if mounts is not None and not getattr(args, "recreate_container", False):
+        print("容器 %s 存在，但没有挂载 %s。" % (name, vfs_host))
+        print("")
+        print("方式一：在你的 compose 或 docker run 里补一条挂载，然后重启容器")
+        print("    -v %s:%s:ro" % (vfs_host, vfs_in))
+        print("  重启后重跑本条命令，会跳过重建直接接线。")
+        print("")
+        print("方式二：让本工具重建容器（会删掉原容器，你自定义的挂载和环境变量")
+        print("        会丢失，只保留 [jellyfin] 段里写的配置）：")
+        print("    animediator deploy --recreate-container")
+        return 2
+
     print("把 %s 挂到：%s" % (vfs_in, vfs_host))
 
     if FLAGS.dry_run:
@@ -572,21 +647,22 @@ def recreate_container(args=None):
     cmd = ["docker", "run", "-d", "--name", name,
            "--network", "host",
            "--restart", "unless-stopped",
-           "-e", "PUID=0", "-e", "PGID=0", "-e", "TZ=Asia/Shanghai",
+           "-e", "PUID=%s" % (jf.get("puid") or "0"),
+           "-e", "PGID=%s" % (jf.get("pgid") or "0"),
+           "-e", "TZ=%s" % (jf.get("tz") or "Asia/Shanghai"),
            "-e", "JELLYFIN_DATA_DIR=/config",
            "-e", "JELLYFIN_CACHE_DIR=/cache",
            "-e", "JELLYFIN_CONFIG_DIR=/config/config",
            "-e", "JELLYFIN_LOG_DIR=/config/log",
            "-e", "JELLYFIN_WEB_DIR=/jellyfin/jellyfin-web",
-           "-e", "HTTP_PROXY=http://127.0.0.1:7890",
-           "-e", "HTTPS_PROXY=http://127.0.0.1:7890",
-           "-e", "http_proxy=http://127.0.0.1:7890",
-           "-e", "https_proxy=http://127.0.0.1:7890",
-           "-e", "NO_PROXY=localhost,127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8",
-           "-e", "no_proxy=localhost,127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8",
            "-v", "%s:/config" % cfg_dir,
            "-v", "%s:/cache" % cache_dir]
-    # 媒体盘挂载（旧脚本里是两块盘的硬编码 uuid → 走 cfg.media）
+    proxy = (cfg.proxy or "").strip()
+    if proxy:
+        for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            cmd += ["-e", "%s=%s" % (k, proxy)]
+        cmd += ["-e", "NO_PROXY=localhost,127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8",
+                "-e", "no_proxy=localhost,127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8"]
     for k, m in sorted((cfg.media or {}).items()):
         root = m.get("root", "")
         cont = m.get("container") or m.get("root", "")
@@ -638,7 +714,7 @@ def deploy(args=None):
     if getattr(args, "rebuild", False):
         rc = rebuild(args)
     else:
-        wire(args)
+        rc = wire(args)
     if rc:
         return rc
     grouping(args)

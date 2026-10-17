@@ -22,6 +22,7 @@ import os
 import re
 import sqlite3
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -134,7 +135,27 @@ def _jf_auth(cfg):
 def _jf_get(cfg, p, **q):
     u = cfg.jellyfin["url"] + p + (("?" + urllib.parse.urlencode(q)) if q else "")
     H = _jf_auth(cfg)
-    return json.loads(urllib.request.urlopen(urllib.request.Request(u, headers=H), timeout=300).read().decode())
+    try:
+        return json.loads(urllib.request.urlopen(
+            urllib.request.Request(u, headers=H), timeout=300).read().decode())
+    except urllib.error.HTTPError as ex:
+        if ex.code in (401, 403):
+            # 不抛异常栈 —— 用户看到几十行 Traceback 只会困惑。
+            # 这里换成一句说明并中止，由 CLI 统一带出退出码。
+            print()
+            print("Jellyfin 拒绝了请求（HTTP %d）。" % ex.code)
+            print("  api_key 无效或已删除。到 Jellyfin 控制台 → 高级 → API 密钥")
+            print("  重新生成一个，填进 animediator.toml 的 [jellyfin] api_key。")
+            print("  只想看本地统计：加 --no-jellyfin 跳过这一步。")
+            raise SystemExit(3)
+        print()
+        print("Jellyfin 返回 HTTP %d（%s）。" % (ex.code, p))
+        raise SystemExit(3)
+    except urllib.error.URLError as ex:
+        print()
+        print("连不上 Jellyfin：%s" % (ex.reason or ex))
+        print("  检查 animediator.toml 的 [jellyfin] url，或加 --no-jellyfin 跳过。")
+        raise SystemExit(3)
 
 
 def ep_enrich(args=None):
@@ -553,8 +574,14 @@ def listing(args=None):
 # ─────────────────────────────────────────────────────────────────────────────
 def main(args=None):
     status(args)
-    ep_enrich(args)
-    ep_split(args)
+    # --no-jellyfin：不碰 Jellyfin，只用作业库出报告。
+    # 这一步在孤立环境里（没有 Jellyfin、或 api_key 失效）必须能跑通，
+    # 否则"生成本地报告"这种最基本的事情都会被一个外部依赖卡住。
+    if getattr(args, "no_jellyfin", False) if args is not None else False:
+        print("跳过 Jellyfin 相关统计（--no-jellyfin）")
+    else:
+        ep_enrich(args)
+        ep_split(args)
     html(args)
     listing(args)
 

@@ -79,8 +79,10 @@ def main(args=None):
         return 2
     global STAFFS, RELS, BGM
     cfg = get_cfg()
-    b = cfg.data_dir / "staffs.yml"
-    r = cfg.data_dir / "relations.yml"
+    a_staffs = getattr(args, "staffs", None) if args is not None else None
+    a_rels = getattr(args, "relations", None) if args is not None else None
+    b = type(cfg.data_dir)(a_staffs) if a_staffs else (cfg.data_dir / "staffs.yml")
+    r = type(cfg.data_dir)(a_rels) if a_rels else (cfg.data_dir / "relations.yml")
     if not (b.exists() and r.exists()):
         print("常量表不在 %s 或 %s" % (b, r))
         print("  从 https://github.com/bangumi/common 取 subject_staffs.yml / "

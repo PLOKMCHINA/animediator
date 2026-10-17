@@ -337,9 +337,9 @@ def init_cmd(args=None):
     cfg = get_cfg()
     target = (Path(args.config) if getattr(args, "config", None) and args.config
               else Path.cwd() / "animediator.toml")
-    if target.exists():
-        print("已经存在：%s（不覆盖）" % target)
-        print("  想重新探测就先把它挪开。")
+    if target.exists() and not getattr(args, "force", False):
+        print("已经存在：%s" % target)
+        print("  要按当前磁盘重新探测并覆盖，加 --force")
         return 1
 
     fields = {"media": "", "jf_url": "http://127.0.0.1:8096",
@@ -361,8 +361,8 @@ def init_cmd(args=None):
         print("  3. 检查 [media] 的 container 路径是否真的是容器里看到的")
         print()
     print("接下来：")
-    print("  1. 把番组计划的 dump.zip 放进 data/，跑  animediator bgm-build")
-    print("  2. 跑  animediator doctor  看还有哪项没通")
+    print("  1. 跑  animediator bgm-build   建立离线索引（会自动下载数据）")
+    print("  2. 跑  animediator doctor      看还有哪项没通")
     return 0
 
 
@@ -425,8 +425,8 @@ def doctor_cmd(args=None):
               % (OK, cfg.dump, cfg.dump.stat().st_size / 1e6))
     else:
         print("%s dump.zip 不在 %s" % (WARN, cfg.dump))
-        print("        从 https://github.com/bangumi/Archive 下载后放进去，")
-        print("        然后跑 `animediator bgm-build`")
+        print("        跑 `animediator bgm-build` 会自动下载最新一期（约 440 MB，")
+        print("        国内需要能访问 GitHub，可在配置里设 proxy）")
         warns.append("dump.zip")
     if cfg.bgm_db.exists():
         import sqlite3
@@ -482,6 +482,31 @@ def doctor_cmd(args=None):
         if not jf.get("api_key"):
             print("%s 没配 api_key —— 控制台 → 高级 → API 密钥 里生成一个" % WARN)
             warns.append("jellyfin.api_key")
+        else:
+            # 有 key 就真查一次，别让 doctor 说通过而 deploy 撞 401
+            req = urllib.request.Request(
+                url.rstrip("/") + "/Library/VirtualFolders",
+                headers={"Authorization": 'MediaBrowser Token="%s"' % jf["api_key"]})
+            try:
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    libs = json.loads(r.read().decode())
+                names = [L.get("Name") for L in libs if isinstance(L, dict)]
+                print("%s api_key 可用，媒体库：%s"
+                      % (OK, "、".join(str(n) for n in names) or "（还没有媒体库）"))
+                want = jf.get("library") or "动漫"
+                if want not in names:
+                    print("%s 没有名为「%s」的媒体库 —— deploy 会找不到目标库" % (WARN, want))
+                    warns.append("jellyfin.library")
+            except urllib.error.HTTPError as ex:
+                if ex.code in (401, 403):
+                    print("%s api_key 无效（HTTP %s）—— 重新生成一个" % (BAD, ex.code))
+                    fails.append("jellyfin.api_key")
+                else:
+                    print("%s 查媒体库失败：HTTP %s" % (BAD, ex.code))
+                    fails.append("jellyfin.api")
+            except Exception as ex:
+                print("%s 查媒体库失败：%s" % (WARN, type(ex).__name__))
+                warns.append("jellyfin.api")
     print("%s 容器内虚拟库路径 %s%s"
           % (OK, jf.get("vfs_in_container", "(未配)"),
              "" if jf.get("vfs_in_container") else "  ← 必须填，否则容器里的链接全是断的"))

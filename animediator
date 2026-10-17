@@ -1,0 +1,6 @@
+#!/bin/sh
+# 不安装直接运行：把 src/ 加进模块搜索路径后调用 Python。
+# 用法与安装后的 animediator 命令完全一样。
+set -e
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PYTHONPATH="$here/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m animediator "$@"

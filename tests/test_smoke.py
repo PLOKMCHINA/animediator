@@ -259,5 +259,119 @@ def _main():
     return 1 if fails else 0
 
 
+def test_run_without_semantic_offers_choice():
+    """`run` 在没配模型时不能直接崩，必须给出可选做法。
+
+    用户手里可能已经有完整的判定结果，只是暂时连不上模型 ——
+    直接报错会给人的印象是"这工具坏了"。
+    """
+    from animediator import config
+    from animediator import run as run_mod
+    import io
+    import contextlib
+    with tempfile.TemporaryDirectory() as d:
+        cfgp = _write_cfg(d)
+        config.load(cfgp)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = run_mod.main(None)
+        out = buf.getvalue()
+        assert rc == 2, "无模型时应返回 2，实际 %r" % rc
+        assert "--no-semantic" in out, "必须提示 --no-semantic 这条路"
+
+
+def test_fetch_falls_back_to_local_on_failure():
+    """数据更新失败时，本地有文件就必须继续用，不能崩。
+
+    这是最容易踩的一条：把"更新"当成硬依赖，网络一抖整个流程就废了。
+    """
+    from animediator.bgm import fetch
+    import inspect
+    src = inspect.getsource(fetch.ensure)
+    assert "沿用本地" in src, "ensure() 里应有本地兜底分支"
+    assert "更新失败" in src
+
+
+def test_jellyfin_api_error_is_reported_not_crashed():
+    """Jellyfin 返回错误时给说明，不能把错误体当列表用。
+
+    实际踩过：api_key 失效 → 返回 {"__error__":401} → 代码去取 ["Name"] →
+    抛 AttributeError，用户看到的是堆栈而不是"key 过期了"。
+    """
+    from animediator import jellyfin
+
+    orig = jellyfin.call
+    try:
+        jellyfin.call = lambda *a, **k: {"__error__": 401, "body": "Unauthorized"}
+        with raises(SystemExit):
+            jellyfin._folders()
+
+        jellyfin.call = lambda *a, **k: "not-a-list"
+        with raises(SystemExit):
+            jellyfin._folders()
+
+        jellyfin.call = lambda *a, **k: [{"Name": "动漫"}, {"Name": "电影"}]
+        got = jellyfin._folders()
+        assert [x["Name"] for x in got] == ["动漫", "电影"]
+    finally:
+        jellyfin.call = orig
+
+
+def test_recreate_container_skips_when_already_mounted():
+    """虚拟库已经挂进容器时不再重建容器。
+
+    重建会删掉用户自己加的挂载和环境变量，不能当成默认行为。
+    """
+    from animediator import jellyfin, config
+    with tempfile.TemporaryDirectory() as d:
+        cfgp = _write_cfg(d)
+        config.load(cfgp)
+        cfg = config.get()
+        cfg.vfs = d                    # 存在的目录
+        vfs = str(cfg.vfs)
+
+        orig = jellyfin._container_mounts
+        try:
+            jellyfin._container_mounts = lambda name: [vfs, "/other"]
+            import io
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = jellyfin.recreate_container(None)
+            assert rc == 0, "已挂载时应直接返回 0，实际 %r" % rc
+            assert "跳过重建" in buf.getvalue()
+
+            jellyfin._container_mounts = lambda name: ["/elsewhere"]
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = jellyfin.recreate_container(None)
+            out = buf.getvalue()
+            assert rc == 2, "没挂载又没授权时应停下，实际 %r" % rc
+            assert "--recreate-container" in out, "必须告诉用户怎么授权"
+        finally:
+            jellyfin._container_mounts = orig
+
+
+def test_init_refuses_overwrite_without_force():
+    """已有配置时 init 不覆盖，但要告诉用户 --force 这条路。"""
+    from animediator import wizard, config
+    import io
+    with tempfile.TemporaryDirectory() as d:
+        cfgp = os.path.join(d, "animediator.toml")
+        with open(cfgp, "w", encoding="utf-8") as f:
+            f.write("work='w'\n")
+        config.load(cfgp)
+
+        class A:
+            config = cfgp
+            detect = False
+            force = False
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = wizard.init_cmd(A())
+        assert rc == 1
+        assert "--force" in buf.getvalue()
+
+
 if __name__ == "__main__":
     sys.exit(_main())

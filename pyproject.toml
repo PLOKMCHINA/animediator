@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "animediator"
 version = "1.0.0"
-description = "把硬盘上命名混乱的动漫收藏整理成 Jellyfin 能认的媒体库（离线索引 + 可选语义层）"
+description = "Anime library organizer"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

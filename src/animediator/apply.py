@@ -23,9 +23,30 @@ SRC = cfg.w("reresolve3.jsonl")
 BK = cfg.w("unit_bgm_backup.json")
 
 
+def _read_rows():
+    """读复核结果。文件不在时说明该怎么办，不抛堆栈。"""
+    if not SRC.exists():
+        raise SystemExit(
+            "缺少 %s\n"
+            "  这是复核结果，需要先跑 `animediator recheck` 生成。\n"
+            "  如果已经跑过别的流程，确认 --config 指向的是同一个工程目录。"
+            % SRC)
+    rows = []
+    with open(SRC, encoding="utf-8") as f:
+        for i, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                raise SystemExit("%s 第 %d 行不是合法 JSON，文件可能没写完" % (SRC, i))
+    return rows
+
+
 def main(args=None):
     if FLAGS.dry_run:
-        rows = [json.loads(l) for l in open(SRC, encoding="utf-8")]
+        rows = _read_rows()
         key = {}
         for r in rows:
             key[(r["uid"], r["unit"])] = r
@@ -46,7 +67,7 @@ def main(args=None):
         print("[dry-run] 将改判 %d 行（不备份、不快照、不改库）" % changed)
         return 0
 
-    rows = [json.loads(l) for l in open(SRC, encoding="utf-8")]
+    rows = _read_rows()
     key = {}
     for r in rows:
         key[(r["uid"], r["unit"])] = r

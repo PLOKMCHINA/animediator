@@ -37,6 +37,7 @@ import sqlite3
 import sys
 import time
 import zipfile
+from pathlib import Path
 
 from ..config import get as get_cfg
 from ..textutil import norm_query as norm
@@ -234,15 +235,41 @@ def check(dump=None, out=None):
 
 
 def main(args=None):
-    """`animediator bgm-build` 的入口：默认 build，加 --check 只体检不重建。"""
+    """`animediator bgm-build` 的入口。
+
+    默认行为：**先确保本地数据是最新一期，再建索引。**
+    不需要用户去 GitHub 找文件、也不需要记得每周更新。
+
+        --offline   不联网，只用本地已有的 dump
+        --force     无视版本判断，强制重新下载
+        --check     只体检索引，不重建
+    """
     cfg = get_cfg()
-    dump = getattr(args, "dump", None) if args is not None else None
-    out = getattr(args, "out", None) if args is not None else None
-    want_check = bool(getattr(args, "check", False)) if args is not None else False
+    a = args
+    dump = getattr(a, "dump", None) if a is not None else None
+    out = getattr(a, "out", None) if a is not None else None
+    want_check = bool(getattr(a, "check", False)) if a is not None else False
+    offline = bool(getattr(a, "offline", False)) if a is not None else False
+    force = bool(getattr(a, "force", False)) if a is not None else False
+
     if want_check:
         return check(dump, out)
-    if not cfg.dump.exists() and not dump:
-        print("找不到 dump.zip：%s" % cfg.dump)
-        print("  从 https://github.com/bangumi/Archive 下载（几百 MB），放进 data/ 即可。")
+
+    if dump:
+        # 用户明确指定了文件，就用它，不去联网
+        if not Path(dump).exists():
+            print("指定的文件不存在：%s" % dump)
+            return 2
+        return build(dump, out)
+
+    # ── 自动获取数据 ──
+    from .fetch import ensure
+    print("═══ 获取离线数据 ═══")
+    try:
+        path, fresh = ensure(force=force, offline=offline)
+    except SystemExit:
+        raise
+    if not path.exists():
         return 2
-    return build(dump, out)
+    print()
+    return build(str(path), out)

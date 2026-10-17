@@ -30,7 +30,8 @@ COMMANDS = {
     "config":     ("打印当前生效的配置（排查用）", "animediator.wizard:config_cmd"),
     "doctor":     ("体检：路径、索引、Jellyfin、语义层能否工作", "animediator.wizard:doctor_cmd"),
 
-    "bgm-build":  ("把番组计划 dump.zip 建成离线索引 bgm.db", "animediator.bgm.index:main"),
+    "bgm-build":  ("建立离线索引（自动获取最新数据，无需手工下载）", "animediator.bgm.index:main"),
+    "bgm-update": ("只检查并更新离线数据，不重建索引", "animediator.bgm_index_update:main"),
     "bgm-check":  ("体检：这个索引到底答不答得上真问题", "animediator.bgm.check:main"),
     "bgm-aodb":   ("把外部标题库（aodb）并进作业库，供归库查名字", "animediator.bgm.aodb:main"),
     "bgm-merge":  ("把 aodb 的罗马音/别名并进离线索引", "animediator.bgm.merge:main"),
@@ -121,6 +122,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sp = sub.choices["init"]
     sp.add_argument("--detect", action="store_true",
                     help="先探测这台机器（盘位/容器映射/Jellyfin/本地模型）再写模板")
+    sp.add_argument("--force", action="store_true",
+                    help="已存在配置时覆盖它")
 
     sp = sub.choices["identify"]
     sp.add_argument("--workers", type=int, help="并发数（默认取配置）")
@@ -156,22 +159,49 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sp = sub.choices["materialize"]
     sp.add_argument("--out", metavar="DIR", help="输出目录（同 --vfs）")
+    sp.add_argument("--force", action="store_true",
+                    help="目标目录非空且看不出是本工具生成的库时，仍然写入")
+
+    sp = sub.choices["translate"]
+    sp.add_argument("--limit", type=int, help="最多处理多少个条目（先小批试跑）")
+
+    sp = sub.choices["bgm-consts"]
+    sp.add_argument("--staffs", metavar="FILE", help="职位对照表路径")
+    sp.add_argument("--relations", metavar="FILE", help="关联类型对照表路径")
 
     sp = sub.choices["bgm-build"]
-    sp.add_argument("--dump", metavar="ZIP", help="番组计划 dump.zip 路径")
+    sp.add_argument("--dump", metavar="ZIP", help="手动指定数据文件（指定后不联网）")
     sp.add_argument("--out", metavar="DB", help="输出 bgm.db 路径")
     sp.add_argument("--check", action="store_true", help="只体检不重建")
-    sp.set_defaults(dump=None, out=None, check=False)
+    sp.add_argument("--offline", action="store_true", help="不联网，只用本地已有的数据")
+    sp.add_argument("--force", action="store_true", help="无视版本判断，强制重新下载")
+    sp.set_defaults(dump=None, out=None, check=False, offline=False, force=False)
+
+    sp = sub.choices["bgm-update"]
+    sp.add_argument("--offline", action="store_true", help="不联网，只看本地状态")
+    sp.add_argument("--force", action="store_true", help="无视版本判断，强制重新下载")
+    sp.set_defaults(offline=False, force=False)
 
     sp = sub.choices["meta"]
     sp.add_argument("argv", nargs="*", help="search <词> 或 get <bgm_id>")
 
     sp = sub.choices["deploy"]
     sp.add_argument("--rebuild", action="store_true", help="删掉旧库重建（路径大变后必须）")
+    sp.add_argument("--recreate-container", dest="recreate_container",
+                    action="store_true",
+                    help="允许删掉现有 Jellyfin 容器重建（默认只在已挂载时跳过）")
 
     sp = sub.choices["run"]
     sp.add_argument("--from", dest="from_step", metavar="步骤", help="从哪一步开始")
     sp.add_argument("--to", dest="to_step", metavar="步骤", help="到哪一步结束")
+    sp.add_argument("--no-deploy", action="store_true",
+                    help="不接入 Jellyfin，只生成文件")
+    sp.add_argument("--no-semantic", action="store_true",
+                    help="跳过需要语言模型的步骤（用已有的判定结果继续）")
+    sp.add_argument("--write", action="store_true", default=True,
+                    help="（流程内 nfo 始终写盘）")
+    sp.set_defaults(from_step=None, to_step=None,
+                    no_deploy=False, no_semantic=False)
 
     return p
 
@@ -212,7 +242,14 @@ def main(argv=None) -> int:
         print("\n中断。中间产物在 %s，可以直接重跑这一步。" % cfg.work)
         return 130
     except SystemExit as ex:
-        return int(ex.code or 0)
+        # 拿到的是 int 就直接当退出码；拿到的是字符串就打印出来。
+        # 模块里用 `raise SystemExit("...")` 写说明时，用户应该看到那句话，
+        # 而不是一个光秃秃的退出码。
+        code = ex.code
+        if isinstance(code, str):
+            print(code)
+            return 1
+        return int(code or 0)
     return int(rc or 0)
 
 

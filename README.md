@@ -1,351 +1,440 @@
 # AniMediator
 
-把硬盘上命名混乱的动漫收藏，整理成 Jellyfin 认得出、**全中文、有海报墙**的媒体库。
+把磁盘上命名各异的动漫文件整理成媒体服务器能直接读取的目录树。
 
-```
-整理前                                  整理后（Jellyfin 里）
-[VCB-Studio] Fumetsu no Anata e……        葬送的芙莉莲 (2021)
-  [Ma10p_1080p]/[01][Ma10p].mkv    →        ├── Season 01/
-  [Ma10p_1080p]/[02][Ma10p].mkv             │   ├── 葬送的芙莉莲 - S01E01.mkv
-  [SPs]/NCOP.mkv                            │   ├── 葬送的芙莉莲 - S01E02.mkv
-                                            │   └── …（中文集名、简介、海报、声优）
-                                            └── Season 00/
-                                                └── 葬送的芙莉莲 - S00E01.mkv
-```
+它扫描视频目录，判定每个目录对应 Bangumi 条目库里的哪部作品，然后生成一棵
+只含符号链接的媒体目录树，并写入 `bangumi.ini` 与集级 NFO。原始视频文件不会
+被移动、重命名或删除。
 
-**你的原始文件一个字节都不会动。** 整理结果是一棵由符号链接组成的虚拟库，
-配错了删掉重生成就行。
+## 工作方式
 
----
+整理分两个阶段。
 
-## 它解决什么问题
+**判定阶段**读取目录名和文件名，产出每个目录的归属判定。判定所需的两类
+信息来自不同来源：目录自身的命名特征由语言模型识别（例如判断
+`[Ma10p_1080p]` 下 25 个带编号的文件是正片，而 `[SPs]` 下的是特典），
+作品到 Bangumi 条目的映射则由本地离线索引精确查询得到。
 
-Jellyfin 自带的刮削靠**文件名**猜，而中文动漫收藏的现实是：
+**生成阶段**依据判定结果构造输出目录。每个 Bangumi 条目对应一个目录，
+下设 `Season 01`（正片）与 `Season 00`（特典）。集号取自 Bangumi 条目的
+章节序号，不与文件名中的编号直接对应——发布方常用局部编号
+（`001-032`）或部番编号（`113-143`），两者都会按目录名标注的区间换算。
 
-- 文件名里塞满发布组、画质、音轨信息（`[DBD-Raws][银魂][S1][01-49][1080P][BDRip][HEVC-10bit][FLAC]`）
-- 番名可能是日文、罗马音、英文、中文，还有一堆别名
-- 一个目录里装两部作品（R1+R2、TV+剧场版）
-- 特典/SP/NCOP 混在正片里，数量比正片还多
-- 同名不同季、同季不同版本（新编集版/总集篇/剧场版总集篇）
+Jellyfin 通过 `bangumi.ini` 中的 `ID` 得知归属，再经 Bangumi 插件获取中文名、
+简介、海报与声优。本工具不下载图片，也不写番剧级元数据。
 
-结果就是：认错的（Charlotte 认成 Queen Charlotte）、认不出的、
-卡片上显示罗马音的、简介空着的、特典全挤进 Season 01 的。
+输出的是标准目录结构与 NFO。Jellyfin 已实测可用；其他能读本地 NFO 的客户端
+理论上也能读，但没有验证过。Plex 不读本地 NFO，也不认 `bangumi.ini`，用它读
+不到这里的任何元数据。
 
-AniMediator 换个做法：**先确定"这是什么作品"，再照着作品资料铺结构。**
-身份靠 Bangumi 的离线全量索引来认，认出来之后中文名、集数、简介、
-每集标题、声优全都有了，Jellyfin 只需要照着读。
+## 依赖
 
----
+运行时只需 Python 3.10 或更高版本，无第三方包依赖。
 
-## 三条硬设计
+`bgm-consts` 子命令解析 Stardict 格式的对照表时使用 PyYAML；其余命令不需要。
 
-### 1. 只读原始文件
-
-全程不移动、不改名、不删除你的视频。输出目录里只有：
-
-- `bangumi.ini`（告诉 Jellyfin 这条是哪部作品）
-- `.nfo`（集级元数据）
-- **符号链接**（指向你的原始文件）
-
-不满意？`rm -rf` 那个输出目录，重跑一遍。原文库毫发无损。
-
-### 2. 引擎零依赖、零模型
-
-扫描、归库、生成、写 NFO、出报告——**全部只用 Python 标准库**
-（`sqlite3` / `urllib` / `zipfile` / `tomllib`）。你的 NAS 是 J1900 还是 5090 都一样跑。
-
-需要"看懂"的地方（认片名、判断正片还是特典）走**可插拔的语义层**：
-
-```toml
-[semantic]
-backend  = "openai"
-base_url = "http://127.0.0.1:11434/v1"   # 有显卡，本地跑，一分钱不花
-model    = "qwen2.5:14b"
-```
-
-```toml
-[semantic]
-backend  = "openai"
-base_url = "https://api.deepseek.com/v1"  # 没算力，接云端
-api_key  = "sk-..."
-model    = "deepseek-chat"
-```
-
-**引擎侧代码完全一样。** 不配也能跑——只是依赖语义层的命令会用不了，
-并且会明确告诉你缺什么，而不是静默跑成"什么都没识别出来"。
-
-### 3. 环境相关的东西只在一处
-
-路径、盘位、Jellyfin 地址、模型后端全在 `animediator.toml`。
-代码里没有任何机器专有的字面量——换台机器只要改这一个文件。
-
----
-
-## 职责边界：我们只保证一件事 —— bgm id 是对的
-
-这条线要划清楚，不然会做一堆插件本来就干得挺好的事。
-
-| 谁干 | 干什么 |
-|---|---|
-| **AniMediator** | 认身份：这个目录是哪部作品（bgm id）、哪个文件是第几集、哪个是特典 |
-| **Bangumi 插件** | 拿 bgm id 去取元数据：中文名、中文简介、海报、横幅、声优、角色 |
-| **Jellyfin** | 渲染海报墙、播放、转码 |
-
-**所以我们不写 `poster.jpg`，也不下图片。** 图片 URL 带 hash，
-离线推不出来——那是插件联网+tools 的活，重复做只会让两边打架。
-我们把 `bangumi.ini` 写对，插件自己去拉，海报墙就是对的。
-
-```
-番目录/bangumi.ini              [Bangumi] ID=106818
-番目录/Season 01/bangumi.ini    ← 必须也写一份（否则集级拿不到 id）
-番目录/Season 01/暗杀教室 - S01E01.nfo   ← 中文集名/简介/播出日
-```
-
-> ⚠️ **Season 目录里的那份 `bangumi.ini` 不能省。**
-> Bangumi 插件的 `EpisodeProvider` 用 `LocalConfiguration.ForPath(info.Path)` 读配置，
-> 读的是**文件所在目录**的 ini。只写在番目录的话，集级拿不到 id，
-> 插件既匹配不上（实测 200 集 0 个 ProviderIds），中文集名也落不下来。
-
-### 那别的影视工具能不能用？
-
-- **Jellyfin** —— 原生支持，这是主目标。
-- **Kodi / Emby / Infuse** —— 认**标准 NFO**，我们的 `episodedetails` / `tvshow` 就是 Kodi 格式。
-  加 `animediator nfo --series` 会额外写 `tvshow.nfo`，系列级元数据就有了。
-  **但海报还是没有**（理由同上：图是插件的活）。这几个工具会显示文字元数据 + 空海报。
-- **Plex** —— 不读 NFO、不认 `bangumi.ini`（除非装第三方 XBMCnfo importer）。
-  **不支持**，也不打算假装支持。
-
----
+配置文件使用 TOML，需要 Python 3.11+（标准库 `tomllib`）。Python 3.10 请改用
+JSON 格式的配置文件，字段相同。
 
 ## 安装
 
+仓库自带启动脚本，克隆完就能用，不需要 pip：
+
 ```bash
-git clone <this-repo>
+git clone https://github.com/PLOKMCHINA/animediator.git
 cd animediator
-pip install -e .
+./animediator doctor
 ```
 
-要求 Python ≥ 3.10（3.11+ 才能用 `.toml` 配置，更低版本请用 `.json`）。
+`./animediator` 只是把 `src/` 加进 `PYTHONPATH` 后调用 Python，不做任何安装。
 
-如果装的时候卡在拉构建依赖（国内常见），加 `--no-build-isolation` 用系统自带的 setuptools：
+想装成系统命令，用虚拟环境：
 
 ```bash
-pip install --no-build-isolation -e .
+python3 -m venv .venv
+.venv/bin/pip install -e .
+.venv/bin/animediator doctor
 ```
 
-或者不装，直接跑：
+构建隔离要联网拉 setuptools 和 wheel。国内访问 pypi.org 经常不通，改用镜像：
 
 ```bash
-PYTHONPATH=src python3 -m animediator --help
+.venv/bin/pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
----
+Debian 12 及以后的系统 Python 受 PEP 668 保护，直接 `pip install` 会被拒绝，
+这就是上面用虚拟环境的原因。确实要装进系统 Python 才需要
+`--break-system-packages`，一般没有必要。
 
-## 快速开始
+## 配置
 
-### ① 生成配置
+运行 `animediator init` 生成 `animediator.toml`。加 `--detect` 会先探测当前
+机器的磁盘挂载、Docker 端口映射、Jellyfin 服务与本地模型服务，把探测结果写入
+模板，减少手工填写。
+
+```toml
+work = "work"          # 中间产物目录
+data = "data"          # 离线索引目录
+vfs  = "vfs"           # 输出目录
+
+[media.DISK1]
+root      = "/mnt/disk1"        # 宿主机上的路径，扫描从这里开始
+container = "/media/disk1"      # 容器内路径，符号链接指向这里
+
+[jellyfin]
+url              = "http://127.0.0.1:8096"
+api_key          = ""
+library          = "动漫"
+vfs_in_container = "/vfs"
+
+[semantic]
+backend  = "none"
+base_url = ""
+api_key  = ""
+model    = ""
+workers  = 8
+```
+
+### media.root 与 media.container 的区别
+
+`root` 是扫描入口，指向宿主机上真实的磁盘挂载点。`container` 用于生成符号
+链接的目标路径：如果 Jellyfin 运行在 Docker 中，它只能看到容器内的路径，
+链接指向宿主机路径会失效。直接在本机运行 Jellyfin 时，两者填相同值。
+
+配置错误不会产生报错，症状是 Jellyfin 扫描后媒体库为空或集数异常——
+这是排查此类问题时最先检查的地方。
+
+### 配置优先级
+
+命令行参数高于环境变量，环境变量高于配置文件，配置文件高于内置默认值。
+配置项对应的环境变量沿用 `AMI_` 前缀（如 `AMI_VFS`、`AMI_BGMDb`），用于脚本调用。
+
+### 语义层
+
+`semantic.backend` 为 `none` 时，依赖语言模型的命令（`identify`、`reresolve`、
+`recheck`、`split`、`overflow`）不可用，其余命令正常。设为 `openai` 后指向任何
+兼容 OpenAI 接口的服务：
+
+```toml
+[semantic]
+backend  = "openai"
+base_url = "http://127.0.0.1:11434/v1"   # Ollama
+model    = "qwen2.5:14b"
+api_key  = "ollama"
+```
+
+使用推理模型（名称含 `reason`、`thinking` 或 `r1`）时需要设置
+`disable_thinking = true`，否则输出预算会被推理过程耗尽，返回的正文为空，
+表现为反复重试失败。
+
+`workers` 控制并发请求数。免费额度较小的接口应调低该值，否则容易触发限流。
+
+## 建立离线索引
 
 ```bash
-animediator init --detect
+animediator bgm-build
 ```
 
-`--detect` 会自己探一遍这台机器再写模板：
+这一步不需要准备任何文件。它会自己查询番组计划归档的最新一期、下载、
+校验完整性，然后建成索引。数据每周更新一次，重新执行同一条命令即可跟进。
 
+下载支持断点续传，中断后重跑会从断点继续，不会从头再来。
+
+数据来自 [bangumi/Archive](https://github.com/bangumi/Archive)，每期约 450 MB
+压缩包，展开为约 1.3 GB 的 SQLite 数据库。索引建成后，所有作品查询都是本地
+等值比较，不依赖网络。
+
+归档放在 GitHub，国内网络可能连不上，此时在配置里填代理：
+
+```toml
+proxy = "http://127.0.0.1:7890"
 ```
-盘位探测：找到 2 个像媒体盘的挂载（视频数是浅层抽样）
-  /srv/dev-disk-by-uuid-3c1a…  抽样 3992 个视频  →  容器内 /media/anime2
-  /srv/dev-disk-by-uuid-fe23…  抽样  546 个视频  →  容器内 /media/anime1
-Jellyfin：http://127.0.0.1:8096（MyNAS 10.10.7）
-  发现已有的虚拟库挂载：/srv/anime/vfs → /vfs
-语义层：探测到 Ollama，3 个模型，默认用 qwen2.5:14b
-代理：http://127.0.0.1:7890 在监听
-```
 
-它探的东西正好是手动配最容易错的三处：**盘位、容器内映射、Jellyfin 地址**。
-剩下要你自己填的只有 api_key 和（用云端模型时的）模型密钥。
+代理支持 `http://` 与 `socks5h://` 两种形式。
 
-> **`root` 和 `container` 为什么要分开？**
-> 生成的符号链接会被**容器里的 Jellyfin** 读取，它看不到宿主路径。
-> 单机直跑（不经 Docker）时两个填一样即可。
+若本地已有一份可用数据，更新失败不会中断流程——它会保留旧版本继续工作，
+并说明当前使用的版本。只有本地完全没有数据时才会中止。
 
-### ② 建离线索引
+`bgm-update` 只做数据更新，不重建索引；`bgm-build --check` 只验证已有索引；
+`bgm-check` 输出索引的实际查询结果。
 
-从 [bangumi/Archive](https://github.com/bangumi/Archive) 下载每周全量 dump，
-放进 `data/dump.zip`，然后：
+### 可选的外部标题库
+
+`data/aodb.json` 与 `data/bangumi-data.json` 可提高归库阶段的离线命中率，
+实测单值命中率为 58.9%（含）与 52.5%（不含）。未命中不影响正确性，
+这些目录会转入模型判定路径，只是增加调用次数。
+
+不放这两个文件时，`resolve` 会自动从 `bgm.db` 的别名表重建名字索引。
+
+## 运行完整流程
 
 ```bash
-animediator bgm-build          # 约 10~20 分钟，产出 1.3 GB 的 bgm.db
-animediator bgm-check          # 体检：它到底答不答得上真问题
+animediator run
 ```
 
-**只需要这一个文件。** `aodb.json` / `bangumi-data.json` 是可选的加速项：
+一条命令跑完全部步骤，中途不需要人干预。它会依次完成：检查并更新索引数据、
+扫描磁盘、判定目录内容、归属到 Bangumi 条目、复核与修正、生成输出目录、
+写入 NFO、接入 Jellyfin、生成报告。
 
-| 名字索引来源 | 单值命中率（真实 455 个单元实测） |
+先看它打算做什么而不实际写入：
+
+```bash
+animediator run --dry-run
+```
+
+常用选项：
+
+| 选项 | 说明 |
 |---|---|
-| 只有 dump.zip → bgm.db | 52.5% |
-| 再加 aodb | 58.9% |
+| `--from <步骤>` | 从指定步骤开始 |
+| `--to <步骤>` | 到指定步骤结束 |
+| `--no-deploy` | 不接入 Jellyfin，只生成文件 |
+| `--no-semantic` | 跳过需要语言模型的步骤，用已有判定结果继续 |
 
-差的这 6 个点不影响**正确性**（没命中的单元会被送去问模型，判断本来就是模型的活），
-只影响要调多少次模型。所以：
+步骤名依次为：`index`、`scan`、`identify`、`resolve`、`reresolve`、`apply`、
+`recheck`、`split`、`overflow`、`materialize`、`nfo`、`deploy`、`report`。
 
-- 想少烧点配额 → 补 `data/aodb.json` 和 `data/bangumi-data.json`，跑 `animediator bgm-aodb`
-- 只想快点跑起来 → 跳过，`resolve` 会自动用 bgm.db 的 97 万条别名兜底
+任何一步失败，流程会停下并打印续跑命令。已完成的判定不会重新调用模型，
+用 `--from` 从中断处继续即可。
 
-### ③ 体检
+## 命令参考
 
-```bash
-animediator doctor
+### 全局选项
+
+| 选项 | 说明 |
+|---|---|
+| `--config FILE` | 指定配置文件，默认查找 `./animediator.toml` |
+| `--work-dir DIR` | 覆盖中间产物目录 |
+| `--vfs DIR` | 覆盖输出目录 |
+| `--dry-run` | 不写任何文件，只打印计划 |
+| `-y, --yes` | 跳过交互确认 |
+
+全局选项写在子命令前后均可。
+
+### 初始化与诊断
+
+`init [--detect] [--force]`　生成配置模板。`--detect` 先探测本机环境，
+`--force` 覆盖已存在的配置。
+
+`config`　打印当前生效的配置及各项来源。
+
+`doctor`　逐项检查目录、磁盘、索引、Jellyfin 与语义层的可用性。退出码非零
+表示存在阻塞项。
+
+### 索引维护
+
+`bgm-build [--offline] [--force] [--check] [--dump ZIP] [--out DB]`　建立索引。
+默认自动获取最新数据；`--offline` 只用本地数据；`--force` 强制重新下载；
+`--check` 只验证已有索引；`--dump` 指定本地文件（指定后不联网）。
+
+`bgm-update [--offline] [--force]`　只更新数据，不重建索引。
+
+`bgm-check`　输出索引的实际查询结果与覆盖率。
+
+`bgm-aodb`　把外部标题库并入作业库，用于提高归库命中率。
+
+`bgm-merge`　把外部标题库的别名并入离线索引。
+
+`bgm-people`　从全量数据解析班底、声优与角色之间的关联。
+
+`bgm-consts [--staffs FILE] [--relations FILE]`　建立职位与关联类型的中文对照表，
+用于把 Bangumi 的编号翻译成可读名称。需要 PyYAML。对照表默认从 `data/staffs.yml`
+与 `data/relations.yml` 读取。
+
+`meta search <关键词>` / `meta get <bgm_id>`　直接查询单条元数据，用于排查。
+
+### 判定
+
+`scan`　遍历配置中的所有磁盘，记录含视频文件的目录。只读操作。
+
+`identify [--workers N] [--only PATTERN] [--limit N]`　按单元调用语言模型，
+产出目录内容的结构化判定。结果逐条追加写入，中断后重跑会跳过已完成的单元。
+
+`resolve`　查询名字索引，把单元对应到 Bangumi 条目。先做本地精确匹配，
+未命中的交给模型判定。
+
+`reresolve [--only SUBSTR] [--redo]`　让模型重新查看目录原始路径确认身份。
+目录名中常带集号区间（`001-032(221-252)`），是区分同一系列多个条目的主要依据。
+
+`reresolve-search [--only SUBSTR] [--redo]`　在上一版本基础上，允许模型先输出
+检索词再查询本地索引，用于关联表覆盖不到的作品。
+
+`apply [--dry-run]`　把复核结果写回作业库。修改前生成 JSON 备份与整库快照，
+仅更新 `unit.bgm_id` 一列。
+
+`translate [--limit N]`　为离线索引与模型都无法识别的条目补充中文名与简介。
+
+### 修正
+
+`recheck [--list] [--limit N] [--redo]`　检测有正片容量却没有任何正片归属的
+条目，让模型带着该条目的正片集数重新判定。识别阶段缺少集数参照时，容易把
+主目录误判为特典目录。
+
+`split [--list] [--limit N] [--redo]`　处理正片数量超出条目容量的单元。
+典型情况是一个目录同时包含两季（各 25 集），单一条目无法容纳。
+
+`overflow [--limit N]`　处理拆分后集号仍无法落入条目集号空间的分组。
+
+### 输出
+
+`materialize [--out DIR] [--force]`　生成输出目录。目标目录非空且不包含
+`bangumi.ini` 时中止，`--force` 可跳过该检查。
+
+`nfo [--write] [--series]`　写入集级 NFO。不加 `--write` 时只统计不写盘。
+`--series` 同时生成 `tvshow.nfo`，供 Kodi、Emby 等读取标准 NFO 的客户端使用。
+
+### Jellyfin
+
+`deploy [--rebuild] [--recreate-container]`　将输出目录接入 Jellyfin 媒体库并触发扫描。
+`--rebuild` 在目录结构大幅变化后使用。
+
+接入需要 Jellyfin 容器能读到输出目录。命令会先检查容器是否已经挂载该目录：
+
+- 已挂载 → 跳过容器操作，直接接线。
+- 没挂载 → 打印需要补的 `-v` 参数并停下，不改动容器。多数情况下把这一行
+  加进自己的 compose 再重启容器更稳妥。
+- 容器不存在且配置目录也不存在 → 停下。照原样创建会得到一个空的 Jellyfin。
+
+确实要让本工具重建容器（会删除原容器，只保留 `[jellyfin]` 段里写的镜像、
+路径、PUID 等），加 `--recreate-container`。
+
+`jellyfin <action>`　单独执行某一操作：`wire`（接入）、`rebuild`（重建媒体库）、
+`grouping`（关闭自动分季）、`images`（调整图片获取顺序）、`serialize`（限制
+扫描并发）、`scan`（触发扫描）。
+
+所有写操作在执行前保存改动前的配置快照。加 `--dry-run` 时只打印计划。
+
+### 报告
+
+`report [--no-jellyfin]`　汇总收录情况，输出 `work/web/index.html` 与
+`work/动漫库清单.csv`、`.md`。`--no-jellyfin` 跳过与 Jellyfin 的通信。
+
+## 输出目录结构
+
+```
+<vfs>/葬送的芙莉莲 (2023)/
+├── bangumi.ini
+├── Season 01/
+│   ├── bangumi.ini
+│   ├── 葬送的芙莉莲 - S01E01.mkv      # 符号链接
+│   └── 葬送的芙莉莲 - S01E01.nfo
+└── Season 00/
+    ├── bangumi.ini
+    └── 葬送的芙莉莲 - S00E01.mkv
 ```
 
-逐项检查：目录在不在、盘位读不读得到、索引建没建、Jellyfin 通不通、语义层能不能用。
-有问题它会直接说怎么修。
+`bangumi.ini` 内容：
 
-### ④ 跑
-
-```bash
-animediator run --dry-run     # 先看它打算干什么
-animediator run               # 真跑
+```ini
+[Bangumi]
+ID=400602
 ```
 
-或者分步跑（每步都幂等，断在哪步重跑哪步）：
+`Season 01` 下的同名 `bangumi.ini` 不可省略。Bangumi 插件的集级提供器读取的是
+文件所在目录的配置，只有番剧目录带配置时，集级别的条目 ID 为空，
+中文集名不会生效。
 
-```bash
-animediator scan         # 扫盘（只读）
-animediator identify     # 认片名（要语义层）
-animediator resolve      # 归库
-animediator recheck      # 复核误判
-animediator split        # 拆多季混装目录
-animediator overflow     # 溢出重排
-animediator materialize  # 生成虚拟库
-animediator nfo          # 写集级 NFO
-animediator deploy       # 接进 Jellyfin 并扫描
-animediator report       # 出报告
-```
+## 各客户端的兼容性
 
----
+Jellyfin 是唯一实测过的客户端，`bangumi.ini` 与 NFO 两条路径都验证过。
 
-## 它是怎么工作的
+Kodi、Emby、Infuse 读取标准 NFO，加 `nfo --series` 后可获得文字元数据，
+但不包含海报与图片。
 
-```
-① 扫盘          scan.py         目录树 → 识别单元（拿捏"发布时本来就分好的那一层"）
-② 认片名        identify.py     每个单元交给模型通盘整理（看懂番名/季号/正片特典）
-③ 归库          resolve.py      有序校验：按可信顺序试候选名，命中即停。不打分、不模糊匹配
-④ 复核归库      reresolve.py    让模型看原始路径（含集号标注）确认身份
-⑤ 三维修正      recheck/split/overflow
-                                recheck   把被误判成"特典目录"的正片找回来
-                                split     一个目录装两季 → 拆开归各自的条目
-                                overflow  集号装不下 → 让模型带完整清单重排
-⑥ 生成          materialize.py  每条目 = 扁平章节表 → Season 01（正片）+ Season 00（特典）
-⑦ NFO           nfo.py          中文集名 / 简介 / 声优 → 集级 NFO
-⑧ 上线          jellyfin.py     接库 → 关掉自动分组 → 修图片顺序 → 扫描
-⑨ 验收          report.py       收录情况 + HTML 报告 + csv/md 清单
-```
+Plex 不读取 NFO，也不识别 `bangumi.ini`，不受支持。
 
-### 几个关键取舍
+## 实现说明
 
-**为什么"有序校验"而不是打分匹配？**
-打分意味着我得拍权重（可信度 × 精确度 × 集数吻合），拍错了还显示 `1.00 high`——
-实测把《葬送的芙莉莲》匹配到了《悠悠式》。现在只做一件事：
-按可信顺序试候选名，`WHERE norm = ?` 命中即停。没有分数、没有阈值。
+### 归库为何不用相似度匹配
 
-**为什么特典不给集名？**
-Bangumi 全库只收录了约 150 条 SP，而实际收藏里的特典（NCOP/NCED/PV/CM/Menu）
-是几千个——差 30 倍，按顺序硬对必然大面积错位。
-所以特典只钉住集号，集名保留原始文件名。**诚实优于好看。**
+`resolve` 按可信度顺序尝试候选名称，命中即停止，只用等值比较。
+早期版本使用加权评分（可信度×精确度×集数吻合），权重由人工设定，
+实测把《葬送的芙莉莲》匹配到《悠悠式》时仍显示 `1.00 high`。
+去掉评分后，误配的判定依据从"分数高低"变成"能否在索引中查到"。
 
-**为什么 Season 只有 01 和 00？**
-Bangumi 的数据模型是**扁平**的：一个作品就是一条 1..N 的章节表，没有"季"这一层
-（不同季是不同作品）。如果听模型打的 season 号，
-《火影疾风传》会被切成 Season 01/02/03 三个目录——而它其实只有一条章节表。
+### 特典不写集名
 
----
+Bangumi 全库收录约 150 条特殊章节，而实际收藏中的特典（无字幕片头片尾、
+菜单、宣传片）可达数千个，数量相差两个数量级。按顺序对应必然大面积错位，
+因此特典只确定集号，集名保留原始文件名。
 
-## 命令一览
+### 季的划分
 
-| 命令 | 作用 | 要语义层 |
-|---|---|---|
-| `init` / `config` / `doctor` | 初始化 / 看配置 / 体检 | |
-| `bgm-build` / `bgm-check` / `bgm-merge` / `bgm-people` / `bgm-aodb` | 建离线索引与自检 | |
-| `scan` | 扫盘（只读） | |
-| `identify` | 认片名 | ✓ |
-| `resolve` / `reresolve` / `reresolve-search` | 归库（三段） | ✓ |
-| `recheck` / `split` / `overflow` | 三个修正通道 | ✓ |
-| `apply` | 把复核结果写回（带备份/快照） | |
-| `materialize` / `nfo` | 生成虚拟库 / 写 NFO | |
-| `deploy` / `jellyfin` | 接进 Jellyfin | |
-| `report` | 出报告和清单 | |
-| `run` | 一键跑完整条链 | |
+Bangumi 的数据模型是扁平的：一个条目对应一条 1..N 的章节序列，不同季是不同的
+条目。若按识别阶段给出的季号拆分目录，《火影忍者疾风传》会被拆成三个季，
+而它实际是一条连续章节序列。因此输出固定使用 `Season 01` 与 `Season 00`。
 
-全局选项可以写在子命令前后都行：
+### 安全措施
 
-```bash
-animediator --dry-run materialize
-animediator materialize --dry-run      # 等价
-```
+`--dry-run` 对所有写操作生效。
 
----
+`materialize` 检查目标目录；非空且没有 `bangumi.ini` 时中止。
 
-## 安全网
+`apply` 修改数据库前生成备份与快照。
 
-这套工具会碰到你的媒体库和 Jellyfin 配置，所以到处都有刹车：
+涉及 Jellyfin 配置的写操作在执行前保存快照。
 
-- **`--dry-run`**：只打印将要做什么，不写任何东西。会动 Jellyfin 和虚拟库的命令尤其该先用它。
-- **虚拟库有身份检查**：目标目录非空、又看不出是 AniMediator 生成的库（没有任何 `bangumi.ini`），
-  会停下来要求显式 `--force`——防止把几千个目录建到别人的收藏里。
-- **`apply` 双备份**：改库前写一份 JSON 备份 + 整库快照，随时可回滚。它只改 `unit.bgm_id` 一列。
-- **Jellyfin 操作全程快照**：每个写操作（改库选项、加/删媒体库、改图片顺序）
-  执行前先把改动前状态写成 JSON。
-- **虚拟库里遇到真文件就跳过**，绝不覆盖。
+输出目录中若已存在同名真实文件，跳过而不覆盖。
 
----
+## 故障排查
+
+**Jellyfin 扫描后没有内容**
+检查 `media.container` 是否为容器内路径。可以在 Jellyfin 容器内执行
+`ls -l /vfs/<番剧目录>/Season\ 01/` 确认链接是否可解析。
+
+**集数对不上或季目录为空**
+运行 `animediator report` 查看待处理列表。常见原因是本地集数与 Bangumi 条目
+不一致（收藏本身不全），或该目录在识别阶段被判为特典目录，可用
+`recheck --list` 确认。
+
+**报错 unknown series 或缺少中文名**
+确认 `Season 01/bangumi.ini` 存在。Bangumi 插件的集级提供器读取文件所在
+目录的配置。
+
+**依赖语言模型的命令报错**
+`semantic.backend` 为 `none`。运行 `animediator doctor` 查看所需配置项。
+
+**模型返回空内容**
+使用推理模型时未设 `disable_thinking`。
+
+**索引查询全部落空**
+`bgm.db` 未建立或路径不对。运行 `animediator bgm-check` 验证。
 
 ## 已知限制
 
-- **离线索引里没有的新番/冷门番**：`bgm.db` 是每周 dump，比新番慢一拍。
-  打开 `bgm.allow_network = true` 可以在本地查不到时联网兜底。
-- **特典没有中文集名**（见上面的取舍）。
-- **本地收藏比 Bangumi 少集**的番，会显示成"集数不符"——这是数据事实，不是错误。
-- **一个目录里真的混了两部毫无关系的作品**时，归库只能择一，另一部会显示成"无正片"。
-  这类需要人工介入。
-- 语义层对**超大 prompt**（60+ 个文件）会变慢，模型可能反复重试。
+语言模型对超过 60 个文件的目录处理较慢，可能出现重试。
 
----
+`bgm.db` 来自每周发布的归档数据，新番可能尚未收录。
 
-## 目录结构
+一个目录中若混有分属不同系列的作品，归库只能选择一个条目，另一部分会
+显示为正片缺失。
+
+特典没有中文集名。
+
+## 目录说明
 
 ```
-animediator/
-├── animediator.toml        配置（唯一放环境相关东西的地方）
-├── data/                   dump.zip / bgm.db / 外部标题库
-├── work/                   中间产物（作业库、扫描结果、模型判断）
-│   ├── animediator.db      作业库：unit / ufile / bgm_cache
-│   ├── tree.json           扫描结果
-│   └── status.json         收录情况
-├── vfs/                    输出的虚拟库 ← 只有软链、ini、nfo
-└── src/animediator/
-    ├── config.py           配置装配（文件 + 环境变量 + 命令行）
-    ├── providers.py        语义层（离线/本地模型/云端 API，可插拔）
-    ├── db.py               作业库 schema
-    ├── textutil.py         文本归一化（索引侧 / 查询侧两套语义）
-    ├── bgm/                离线索引（index / merge / people / meta / check / aodb）
-    ├── scan.py units.py identify.py resolve.py
-    ├── reresolve.py reresolve_search.py apply.py
-    ├── recheck.py split.py overflow.py
-    ├── materialize.py nfo.py
-    ├── jellyfin.py deploy.py
-    ├── report.py
-    └── run.py cli.py wizard.py
+src/animediator/
+├── config.py            配置装配与路径解析
+├── providers.py         语义层客户端
+├── textutil.py          文本归一化
+├── db.py                作业库结构
+├── bgm/                 离线索引的建立与查询
+├── scan.py units.py identify.py   扫描与判定
+├── resolve.py reresolve*.py apply.py   归库
+├── recheck.py split.py overflow.py     修正
+├── materialize.py nfo.py               输出
+├── jellyfin.py deploy.py               客户端对接
+├── report.py                           报告
+└── run.py cli.py wizard.py             入口
 ```
 
----
+`tests/test_smoke.py` 无需额外依赖即可运行：
 
-## 致谢
+```bash
+python3 tests/test_smoke.py
+```
 
-- [Bangumi 番组计划](https://bgm.tv) — 中文元数据与每周全量 dump
-- [bangumi/Archive](https://github.com/bangumi/Archive) — dump 发布
-- [bangumi-data](https://github.com/bangumi-data/bangumi-data) — 跨站 ID 映射
-- [Jellyfin](https://jellyfin.org) 与 [Bangumi 插件](https://github.com/kookxiang/jellyfin-plugin-bangumi)
-
-## License
+## 许可
 
 MIT
