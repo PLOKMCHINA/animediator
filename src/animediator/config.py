@@ -187,6 +187,15 @@ class Config:
         return self.work / name
 
     @property
+    def scan_workers(self) -> int:
+        """扫盘并发数。机械盘太高会互相打断寻道，默认 4。"""
+        try:
+            n = int(self.data.get("scan_workers") or 4)
+        except (TypeError, ValueError):
+            n = 4
+        return max(1, min(n, 32))
+
+    @property
     def db(self) -> Path:
         return self.work / "animediator.db"
 

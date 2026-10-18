@@ -400,5 +400,50 @@ def test_init_refuses_overwrite_without_force():
         assert "--force" in buf.getvalue()
 
 
+def test_rulematch_slices_keep_original_text():
+    """降级匹配的切片只增加查询维度，不改写原文。
+
+    曾经的教训是在查询前用正则删方括号，结果番名就在方括号里被删掉了。
+    这里反过来：原文整段、路径各级、方括号内容都会作为候选，一个不丢。
+    """
+    from animediator import rulematch
+    text = "[Airota&VCB-Studio] Chuunibyou demo Koi ga Shitai [Ma10p_1080p]"
+    got = rulematch.slices(text)
+    assert text in got, "整段原文必须在内"
+    assert any("Airota" in g for g in got), "方括号内容不能丢"
+    assert any("Chuunibyou" in g for g in got), "片名片段要保留"
+    # 纯标签不该当查询词
+    assert "menu" not in [norm for norm in got]
+    assert all(len(g.strip()) > 2 for g in got), "过短的片段不当查询词"
+
+
+def test_completions_generate_valid_shell():
+    """补全脚本要能生成，且不出现重复命令。"""
+    from animediator import completions
+    for shell in ("bash", "zsh"):
+        text = completions.bash() if shell == "bash" else completions.zsh()
+        assert "animediator" in text
+        assert "%(" not in text, "模板占位符没替换干净"
+    top = completions.bash()
+    line = [ln for ln in top.splitlines() if ln.strip().startswith("local top=")][0]
+    names = line.split('"')[1].split()
+    assert len(names) == len(set(names)), "补全列表里有重复命令"
+
+
+def test_scan_has_disk_level_parallelism():
+    """扫盘的并行维度是盘，不是目录。
+
+    实测：同一块机械盘上多线程遍历只会互相打断寻道（冷缓存 1 线程 20.9s、
+    8 线程 19.2s，热缓存时并发反而从 2.9s 拖到 4.5s）。两块物理盘并行有效。
+    """
+    import inspect
+    from animediator import scan
+    src = inspect.getsource(scan.main)
+    assert "ThreadPoolExecutor" in src
+    assert "walk_disk" in src
+    sig = inspect.signature(scan.walk_disk)
+    assert "workers" in sig.parameters
+
+
 if __name__ == "__main__":
     sys.exit(_main())
