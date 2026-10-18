@@ -333,6 +333,99 @@ def detect():
     return fields, rep
 
 
+def _toml_str(value: str) -> str:
+    """转义成 TOML 双引号字符串。Windows 路径里的反斜杠要照顾到。"""
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def render_config(state: dict) -> str:
+    """把向导收集到的答案渲染成配置文件。
+
+    只写用户真正填过的东西，其余留默认值——配置文件短，用户才愿意看。
+    """
+    lines = [
+        "# ══════════════════════════════════════════════════════════",
+        "#  AniMediator 配置",
+        "#",
+        "#  环境相关的东西只在这一个文件里：路径、盘位、媒体服务器地址、",
+        "#  语义层后端。代码里没有机器专有的字面量，换台机器只改这里。",
+        "#",
+        "#  相对路径以本文件所在目录为基准。",
+        "# ══════════════════════════════════════════════════════════",
+        "",
+    ]
+    lang = state.get("lang")
+    if lang:
+        lines.append('lang = "%s"          # 界面语言：en / zh' % lang)
+    lines += [
+        'work = "work"        # 中间产物：作业库、扫描结果、判定结果，断点重跑靠它',
+        'data = "data"        # 离线索引：dump.zip 与 bgm.db',
+        'vfs  = "%s"        # 输出的媒体库（只有符号链接，随时可删可重建）'
+        % _toml_str(state.get("vfs") or "vfs"),
+        "",
+        "# ── 盘位：每个动漫盘一条 ──",
+        "#   root       宿主上这个盘挂在哪（扫描走这里）",
+        "#   container  容器里这个盘挂在哪（符号链接的目标写这里）",
+        "#   不用 Docker 时两个填一样。",
+    ]
+    medias = state.get("media") or []
+    if not medias:
+        lines += ["# [media.DISK1]",
+                  '# root      = "/mnt/your-disk"',
+                  '# container = "/media/your-disk"']
+    for idx, m in enumerate(medias, 1):
+        lines += ["",
+                  "[media.DISK%d]" % idx,
+                  'root      = "%s"' % _toml_str(m["root"]),
+                  'container = "%s"' % _toml_str(m["container"])]
+
+    jf = state.get("jellyfin") or {}
+    lines += [
+        "",
+        "# ── 媒体服务器 ──",
+        "#   api_key 在控制台 → 高级 → API 密钥 里生成",
+        "#   vfs_in_container 是上面 vfs 目录在容器里的路径",
+        "[jellyfin]",
+        'url              = "%s"' % _toml_str(jf.get("url") or "http://127.0.0.1:8096"),
+        'api_key          = "%s"' % _toml_str(jf.get("api_key") or ""),
+        'library          = "%s"' % _toml_str(jf.get("library") or "动漫"),
+        'vfs_in_container = "%s"' % _toml_str(jf.get("vfs_in_container") or "/vfs"),
+        'library_id       = ""',
+    ]
+
+    sem = state.get("semantic") or {"backend": "none"}
+    lines += [
+        "",
+        "# ── 语义层（可选外挂）──",
+        '#   backend = "none"   不配模型，只跑精确匹配的命令',
+        '#   backend = "openai" 任何 OpenAI 兼容接口，本地或云端都行',
+        "#",
+        "#   用推理模型（名字带 reason/thinking/r1）时加 disable_thinking = true，",
+        "#   否则 token 全烧在推理上，返回正文是空的。",
+        "[semantic]",
+        'backend          = "%s"' % _toml_str(sem.get("backend") or "none"),
+        'base_url         = "%s"' % _toml_str(sem.get("base_url") or ""),
+        'api_key          = "%s"' % _toml_str(sem.get("api_key") or ""),
+        'model            = "%s"' % _toml_str(sem.get("model") or ""),
+        "disable_thinking = false",
+        "workers          = 8",
+        "timeout          = 240",
+        "retries          = 10",
+        "",
+        "# ── 番组计划离线索引 ──",
+        "#   allow_network = false 时完全不联网，索引查不到就记成待处理。",
+        "[bgm]",
+        'user_agent    = "animediator/1.0 (anime library organizer)"',
+        "allow_network = true",
+        "",
+        "# ── 代理（可选）──",
+        "#   api.bgm.tv 和 Cloudflare 后面的服务在国内有时连不上。",
+        'proxy = ""',
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def init_cmd(args=None):
     cfg = get_cfg()
     target = (Path(args.config) if getattr(args, "config", None) and args.config
@@ -341,6 +434,24 @@ def init_cmd(args=None):
         print("已经存在：%s" % target)
         print("  要按当前磁盘重新探测并覆盖，加 --force")
         return 1
+
+    # 能对话就进向导，不能就生成模板（管道、CI、--no-wizard）
+    from . import setup_wizard
+    want_wizard = (not getattr(args, "no_wizard", False)
+                   and not getattr(args, "detect", False)
+                   and setup_wizard.interactive())
+    if want_wizard:
+        state = setup_wizard.run()
+        if state is None:
+            print("\n已取消，没有写入任何文件。")
+            return 1
+        target.write_text(render_config(state), encoding="utf-8")
+        print("\n已生成 %s" % target)
+        print("\n接下来：")
+        print("  1. animediator bgm-build   建立离线索引（会自动下载数据）")
+        print("  2. animediator doctor      看还有哪项没通")
+        print("  3. animediator run         跑完整条链")
+        return 0
 
     fields = {"media": "", "jf_url": "http://127.0.0.1:8096",
               "vfs_in_container": "/vfs", "backend": "none",
