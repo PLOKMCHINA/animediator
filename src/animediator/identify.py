@@ -229,10 +229,21 @@ def worker(u, fo, counter):
         n_ep = sum(1 for x in p.values() if x["kind"] == "正片")
         n_ex = sum(1 for x in p.values() if x["kind"] == "特典")
         n_un = sum(1 for x in p.values() if x["kind"] == "存疑")
-        print("[%3d/%d] %-44s 正%3d 特%3d 疑%2d %s | %s" % (
+
+        # 估算剩余时间：按已完成单元的平均耗时推
+        eta = ""
+        t0 = counter.get("t0") or time.time()
+        done = counter["done"]
+        if done >= 3:
+            per = (time.time() - t0) / done
+            left = per * (counter["total"] - done)
+            eta = " 剩%s" % ("%dm%02ds" % (int(left // 60), int(left % 60))
+                            if left >= 60 else "%ds" % int(left))
+
+        print("[%3d/%d] %-44s 正%3d 特%3d 疑%2d %s | %s%s" % (
             counter["done"], counter["total"], u["name"][-44:], n_ep, n_ex, n_un,
             ("问题%d" % len(obj["_problems"])) if obj["_problems"] else "",
-            (obj.get("title") or "")[:26]))
+            (obj.get("title") or "")[:26], eta))
     return obj
 
 
@@ -263,6 +274,7 @@ def main(args=None):
         cfg.semantic.get("model") or "-", workers))
     counter = {"done": 0, "total": len(todo), "ok": 0, "fail": 0}
     t0 = time.time()
+    counter["t0"] = t0
     with open(_out(), "a", encoding="utf-8") as fo:
         with ThreadPoolExecutor(max_workers=workers) as ex:
             for _ in as_completed([ex.submit(worker, u, fo, counter) for u in todo]):

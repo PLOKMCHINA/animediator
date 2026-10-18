@@ -141,6 +141,7 @@ api_key  = "ollama"
 | `lib identify` | 对每个目录做归属判定（需要语义层） |
 | `lib resolve` | 把文件对应到 Bangumi 条目 |
 | `lib rulematch` | 不用模型，只用目录名查索引，给出候选供参考 |
+| `lib assign` | 人工指定某个目录对应哪部作品（认错了用它改） |
 | `lib recheck` | 找出被误判成特典的正片 |
 | `lib split` | 拆开装了两季的目录 |
 | `lib overflow` | 处理集号溢出的情况 |

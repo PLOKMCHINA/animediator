@@ -8,6 +8,7 @@
 归一化语义没搞混、安全闸真的会拦。
 真正的行为等价性靠 `tools/` 里那两个对比脚本 + 端到端跑一遍，不在单元测试里做。
 """
+import argparse
 import contextlib
 import os
 import sys
@@ -443,6 +444,52 @@ def test_scan_has_disk_level_parallelism():
     assert "walk_disk" in src
     sig = inspect.signature(scan.walk_disk)
     assert "workers" in sig.parameters
+
+
+def test_assign_search_and_lookup():
+    """人工指定条目的查询逻辑：按名字搜、按 id 取元数据。"""
+    import sqlite3
+    from animediator import assign
+
+    with tempfile.TemporaryDirectory() as d:
+        db = os.path.join(d, "bgm.db")
+        con = sqlite3.connect(db)
+        con.executescript("""
+            CREATE TABLE subject (id INTEGER PRIMARY KEY, name TEXT, name_cn TEXT,
+                                  date TEXT, summary TEXT);
+            CREATE TABLE sname (subject_id INTEGER, txt TEXT, norm TEXT, src TEXT);
+            INSERT INTO subject VALUES (120925, 'Charlotte', '夏洛特', '2015-07-04', '简介');
+            INSERT INTO sname VALUES (120925, 'Charlotte', 'charlotte', 'name');
+            INSERT INTO sname VALUES (120925, '夏洛特', '夏洛特', 'name_cn');
+        """)
+        con.commit()
+        con.close()
+
+        hits = assign._search(db, "夏洛特")
+        assert len(hits) == 1
+        first = hits[0] if hits else {}
+        assert first.get("id") == 120925
+
+        row = assign._lookup_subject(db, 120925)
+        assert row["name_cn"] == "夏洛特"
+
+        assert assign._lookup_subject(db, 999) is None
+
+
+def test_assign_is_registered():
+    """assign 必须在 lib 组里，且带 --list / --bgm / --search。"""
+    from animediator.cli import GROUPS, _build_parser
+    assert "assign" in GROUPS["lib"][1]
+    p = _build_parser()
+    for action in p._actions:
+        if isinstance(action, argparse._SubParsersAction) and "lib" in action.choices:
+            sub = action.choices["lib"]
+            for a in sub._actions:
+                if isinstance(a, argparse._SubParsersAction) and "assign" in a.choices:
+                    opts = {o.dest for o in a.choices["assign"]._actions}
+                    assert {"list", "unit", "search", "bgm"} <= opts
+                    return
+    raise AssertionError("assign 没挂到 lib 组里")
 
 
 if __name__ == "__main__":
