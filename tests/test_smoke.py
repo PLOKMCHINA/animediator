@@ -143,26 +143,53 @@ def test_vfs_safety_gate():
 
 
 def test_cli_has_all_commands():
-    from animediator.cli import _build_parser, COMMANDS
-    p = _build_parser()
-    names = set()
-    for a in p._actions:
-        if hasattr(a, "choices") and a.choices and isinstance(a.choices, dict):
-            names |= set(a.choices.keys())
-    missing = set(COMMANDS) - names
+    """每个命令都必须能被解析到：要么在顶层，要么属于某个分组。"""
+    from animediator.cli import COMMANDS, GROUPS, TOP_LEVEL
+    reachable = set(TOP_LEVEL)
+    for _, members in GROUPS.values():
+        reachable |= set(members)
+    # 顶层里除分组名之外的才是命令
+    reachable -= set(GROUPS)
+    missing = set(COMMANDS) - reachable
     assert not missing, "这些命令没挂到 CLI 上：%s" % missing
+    extra = reachable - set(COMMANDS)
+    assert not extra, "分组里写了不存在的命令：%s" % extra
+
+
+def test_old_command_names_still_work():
+    """重构后旧的一级命令名必须继续可用，否则现有脚本全废。"""
+    from animediator.cli import _build_parser, _rewrite_alias
+    p = _build_parser()
+    cases = [
+        ["scan"], ["identify"], ["resolve"], ["materialize"], ["nfo"],
+        ["deploy"], ["report"], ["bgm-build"], ["meta"], ["jellyfin"],
+    ]
+    for argv in cases:
+        rewritten = _rewrite_alias(argv)
+        ns = p.parse_args(rewritten)
+        got = getattr(ns, "subcmd", None) or ns.cmd
+        assert got == argv[0], "%s 被解析成了 %s" % (argv[0], got)
 
 
 def test_global_flags_work_before_and_after_subcommand():
-    """`--dry-run` 写在子命令前后都得认 —— 人自然会写后面。"""
-    from animediator.cli import _build_parser
+    """`--dry-run` 写在命令前后都得认 —— 人自然会写后面。"""
+    from animediator.cli import _build_parser, _rewrite_alias
     p = _build_parser()
-    a = p.parse_args(["--dry-run", "materialize"])
-    assert a.dry_run is True and a.cmd == "materialize"
-    b = p.parse_args(["materialize", "--dry-run"])
-    assert b.dry_run is True and b.cmd == "materialize"
+    a = p.parse_args(_rewrite_alias(["--dry-run", "materialize"]))
+    assert a.dry_run is True
+    assert (a.subcmd or a.cmd) == "materialize"
+
+    b = p.parse_args(_rewrite_alias(["materialize", "--dry-run"]))
+    assert b.dry_run is True
+    assert (b.subcmd or b.cmd) == "materialize"
+
+    # 分组写法同样两种位置都认
+    c = p.parse_args(["--dry-run", "lib", "materialize"])
+    assert c.dry_run is True and c.subcmd == "materialize"
+    d = p.parse_args(["lib", "materialize", "--dry-run"])
+    assert d.dry_run is True and d.subcmd == "materialize"
     # 写在前面时，子命令没给的值不能把前面的覆盖掉
-    assert p.parse_args(["--config", "/x.toml", "materialize"]).config == "/x.toml"
+    assert p.parse_args(_rewrite_alias(["--config", "/x.toml", "materialize"])).config == "/x.toml"
 
 
 def test_work_db_schema_creates():
