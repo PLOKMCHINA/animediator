@@ -1,0 +1,34 @@
+# 用这套配置跑 AniMediator。
+#
+#   1. 改下面 volumes 里最后一条，指到你放动漫的目录（只读挂进来）
+#   2. docker compose run --rm animediator init        首次配置（会问你几个问题）
+#   3. docker compose run --rm animediator bgm-build   下载索引数据
+#   4. docker compose run --rm animediator run         跑完整条链
+#
+# 三个目录的作用：
+#   ./config  animediator.toml 和中间产物 work/
+#   ./data    离线索引（dump.zip 与 bgm.db，几百 MB，下载一次长期复用）
+#   ./vfs     生成的媒体库，交给 Jellyfin 读
+
+services:
+  animediator:
+    build: .
+    image: animediator:local
+    stdin_open: true          # init 的交互问答需要
+    tty: true
+    working_dir: /config
+    environment:
+      TZ: Asia/Shanghai
+      # 界面语言，en 或 zh；配置文件里的 lang 优先级更高
+      AMI_LANG: zh
+    volumes:
+      - ./config:/config
+      # 配置里的 data / vfs 是相对路径，以 animediator.toml 所在目录为基准，
+      # 所以这三个要挂在 /config 下面，而不是根目录。
+      - ./data:/config/data
+      - ./vfs:/config/vfs
+      # 你的动漫目录。容器里看到的是 /media/anime，
+      # 配置里 [media.X] 的 container 就填这个路径。
+      - /mnt/anime:/media/anime:ro
+    # 默认什么都不做，只打印帮助；实际动作用上面那几条命令
+    command: ["--help"]
