@@ -492,5 +492,48 @@ def test_assign_is_registered():
     raise AssertionError("assign 没挂到 lib 组里")
 
 
+def test_scan_plan_any_disk_count():
+    """盘数是几就排几个 —— 不假设固定两块。
+
+    这块曾经是按「两块盘」写的：盘间并行、盘内还各开 4 个线程，等于 8 个线程
+    同时打两块机械盘，正好踩在自己量出来的「盘内并发更慢」上。现在按盘类型分。
+    """
+    from animediator import scan
+    orig = scan.is_rotational
+    try:
+        scan.is_rotational = lambda p: True
+        for n in (1, 2, 3, 5, 9):
+            tasks = [("DISK%d" % i, "/mnt/d%d" % i) for i in range(1, n + 1)]
+            plan = scan._plan(tasks, 4)
+            assert len(plan) == n, "%d 块盘只排了 %d 个" % (n, len(plan))
+            assert all(p[2] == 1 for p in plan), "机械盘不该开盘内并发"
+    finally:
+        scan.is_rotational = orig
+
+
+def test_scan_plan_inner_workers_only_for_ssd():
+    """盘内并发只给固态盘，且有上限。"""
+    from animediator import scan
+    orig = scan.is_rotational
+    try:
+        scan.is_rotational = lambda p: p != "/ssd"
+        plan = scan._plan([("DISK1", "/hdd1"), ("DISK2", "/ssd"), ("DISK3", "/hdd2")], 4)
+        inner = {p[0]: p[2] for p in plan}
+        assert inner["DISK1"] == 1 and inner["DISK3"] == 1
+        assert 1 < inner["DISK2"] <= scan.INNER_CAP
+
+        plan = scan._plan([("X", "/ssd")], 64)
+        assert plan[0][2] <= scan.INNER_CAP, "workers 给再大也不能超上限"
+    finally:
+        scan.is_rotational = orig
+
+
+def test_is_rotational_handles_partitions():
+    """分区节点下面没有 queue/，要往上找到父磁盘；找不到就当机械盘。"""
+    from animediator.scan import is_rotational
+    assert isinstance(is_rotational("/"), bool)
+    assert is_rotational("/definitely/not/here") is True
+
+
 if __name__ == "__main__":
     sys.exit(_main())

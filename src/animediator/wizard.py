@@ -255,7 +255,9 @@ def detect():
     media_lines = []
     idx = 0
     used_container = set()
-    for m in mounts[:6]:
+    # 不按盘数截断 —— 有几块盘就报几块。只有挂载点多到离谱时才设上限，
+    # 免得探测本身变成负担（每个挂载点最多浅扫 2000 个目录）。
+    for m in mounts[:24]:
         if m["videos"] < 10:
             continue
         idx += 1
