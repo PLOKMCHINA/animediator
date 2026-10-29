@@ -147,6 +147,8 @@ api_key  = "ollama"
 | `lib resolve` | 把文件对应到 Bangumi 条目 |
 | `lib rulematch` | 不用模型，只用目录名查索引，给出候选供参考 |
 | `lib assign` | 人工指定某个目录对应哪部作品（认错了用它改） |
+| `lib undo` | 从整库快照或 bgm_id 备份回滚 |
+| `lib verify` | 检查虚拟库里的链接是否还指向存在的源文件 |
 | `lib recheck` | 找出被误判成特典的正片 |
 | `lib split` | 拆开装了两季的目录 |
 | `lib overflow` | 处理集号溢出的情况 |

@@ -361,8 +361,26 @@ def main(args=None):
     media = cfg.media
 
     def container_of(disk_key):
-        m = media.get(disk_key) or {}
-        return (m.get("container") if isinstance(m, dict) else None) or m or ""
+        m = media.get(disk_key)
+        if m is None:
+            # 盘位名在配置里找不到。继续走下去 container 是空串，os.path.join 会
+            # 生成**相对路径**链接 —— 符号链接按自身所在目录解析，指向虚拟库内部，
+            # 一条都点不开，而且不报错。改过配置里的盘位名就会中招。
+            known = "、".join(sorted(media)) or "（一个都没配）"
+            raise SystemExit(
+                "有文件记的盘位是「%s」，配置里没有这个盘位。\n"
+                "  配置里现有的：%s\n"
+                "  unit 表的磁盘名和 [media] 的段名必须一致，否则生成的链接打不开。\n"
+                "  两种改法：\n"
+                "    ① 把 [media] 的段名改成「%s」，或者\n"
+                "    ② 重新跑 scan 让 unit 记录跟着新配置走（scan 之后要重跑 materialize）。"
+                % (disk_key, known, disk_key))
+        if isinstance(m, dict):
+            c = (m.get("container") or "").strip()
+            if c:
+                return c
+            return (m.get("root") or "").strip()
+        return str(m or "")
 
     used, made = {}, []
     n_ep = n_ex = n_unc = n_noid = 0
