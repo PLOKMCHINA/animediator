@@ -10,6 +10,7 @@
 """
 import argparse
 import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -662,6 +663,57 @@ def test_verify_detects_dead_links():
         os.unlink(str(vfs / "某番 - S01E02.mkv"))
         rc = verify.main(type("A", (), {"sample": 5})())
         assert rc == 0, "没有断链时应当返回 0"
+
+
+def test_status_reports_next_step():
+    """status 要能指出卡在哪一步，并给出该跑的命令。
+
+    流程十几步、动辄跑几个小时，中断几天再回来是常态，得能一眼看出做到哪了。
+    """
+    import json as _j
+    from pathlib import Path
+    from animediator import config as cfgmod
+    from animediator import status as st
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        cfgp = d / "animediator.json"
+        cfgp.write_text(_j.dumps({
+            "work": str(d / "work"), "data": str(d / "data"),
+            "vfs": str(d / "vfs"),
+            "media": {"SDA": {"root": str(d / "disk")}},
+        }), encoding="utf-8")
+        (d / "work").mkdir()
+        cfgmod.load(str(cfgp))
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            st.main(None)
+        out = buf.getvalue()
+        # 什么都还没跑，第一步应当是建索引
+        assert "index bgm-build" in out, out
+
+        # 造出索引和扫描产物，下一步应当变成 identify
+        (d / "data").mkdir(parents=True, exist_ok=True)
+        (d / "data" / "bgm.db").write_bytes(b"")
+        (d / "work" / "tree.json").write_text(
+            _j.dumps({"SDA": {"root": "/x", "dirs": {"a": ["1.mkv"]}}}),
+            encoding="utf-8")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            st.main(None)
+        out = buf.getvalue()
+        assert "lib identify" in out, out
+        assert "1 个目录" in out, out
+
+
+def test_status_width_pads_cjk():
+    """中英文混排按显示宽度对齐，中日韩字符算两格。"""
+    from animediator.status import _pad, _width
+    assert _width("扫描") == 4
+    assert _width("scan") == 4
+    assert _width(_pad("扫描", 10)) == 10
+    assert _width(_pad("scan", 10)) == 10
 
 
 if __name__ == "__main__":

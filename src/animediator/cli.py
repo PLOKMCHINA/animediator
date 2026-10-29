@@ -26,6 +26,7 @@ COMMANDS = {
     "init":       ("在当前目录生成配置（带引导问答）", "animediator.wizard:init_cmd"),
     "config":     ("打印当前生效的配置（排查用）", "animediator.wizard:config_cmd"),
     "doctor":     ("体检：路径、索引、媒体服务器、语义层能否工作", "animediator.wizard:doctor_cmd"),
+    "status":     ("进度：这批数据走到哪一步了，下一步跑什么", "animediator.status:main"),
     "completions": ("生成 shell 补全脚本（bash / zsh）", "animediator.completions:main"),
 
     "bgm-build":  ("建立离线索引（自动获取最新数据，无需手工下载）", "animediator.bgm.index:main"),
@@ -64,7 +65,7 @@ COMMANDS = {
 
 # 分组：名字 -> (一句话说明, 成员命令)
 GROUPS = {
-    "setup": ("首次配置与自检", ["init", "config", "doctor", "completions"]),
+    "setup": ("首次配置与自检", ["init", "config", "doctor", "status", "completions"]),
     "lib": ("整理媒体库：扫描、认片、归库、出库",
             ["scan", "identify", "resolve", "rulematch", "assign", "undo", "verify", "recheck", "split", "overflow",
              "reresolve", "reresolve-search", "apply",
@@ -77,7 +78,7 @@ GROUPS = {
 }
 
 # 顶层帮助里显示的命令（其余仍然可用，只是不占据视线）
-TOP_LEVEL = ["init", "run", "doctor"] + list(GROUPS)
+TOP_LEVEL = ["init", "run", "doctor", "status"] + list(GROUPS)
 
 
 def _global_parent():

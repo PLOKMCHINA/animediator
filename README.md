@@ -137,6 +137,7 @@ api_key  = "ollama"
 | `init [--detect] [--force] [--no-wizard]` | 生成配置。`--no-wizard` 不提问，直接出模板 |
 | `config` | 打印当前生效的配置及各项来源 |
 | `doctor` | 检查目录、磁盘、索引、媒体服务器、语义层 |
+| `status` | 看这批数据走到流程哪一步了，下一步该跑什么 |
 
 ### 整理
 
