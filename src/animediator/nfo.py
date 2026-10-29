@@ -21,6 +21,7 @@
 对 bgm 章节用 **`sort == en` 的数字同一性** —— 不是模糊匹配、不打分。
 对不上就不写那一集（让插件去处理），**不编、不猜、不挪号**。
 """
+import json
 import os
 import re
 import sqlite3
@@ -39,12 +40,15 @@ def esc(s):
     return sx.escape(str(s)) if s is not None else ""
 
 
-def nfo_series(con, sid):
+def nfo_series(con, sid, summary_zh=None):
     r = con.execute("SELECT id,name,name_cn,summary,date,score,rank,tags "
                     "FROM subject WHERE id=?", (sid,)).fetchone()
     if not r:
         return None
     _id, name, name_cn, summary, date, score, rank, tags = r
+    # lib localize 翻好的中文简介优先；没有就用原文
+    if summary_zh:
+        summary = summary_zh
     title = (name_cn or name or "").strip()
     lines = ['<?xml version="1.0" encoding="utf-8" standalone="yes"?>', "<tvshow>"]
     lines.append("  <title>%s</title>" % esc(title))
@@ -168,10 +172,21 @@ def main(args=None):
     nfo_cfg = cfg.data.get("nfo", {}) or {}
     dry = not (getattr(args, "write", False) if args is not None else "--write" in sys.argv)
     series_flag = bool(getattr(args, "series", False)) if args is not None else False
-    WRITE_SERIES = series_flag or bool(nfo_cfg.get("series", False))
+    # 番剧级的 tvshow.nfo 默认写。中文名、简介、年份、评分、标签都在里面，
+    # 不写的话媒体库里显示哪个名字完全由插件决定，常见结果是罗马音或日文原名。
+    # 想交回插件管就设 nfo.series = false。
+    WRITE_SERIES = series_flag or bool(nfo_cfg.get("series", True))
     WRITE_SPECIAL = bool(nfo_cfg.get("special", True))
     BGM = str(cfg.bgm_db)
     VFS = str(cfg.vfs)
+    # lib localize 的翻译缓存（bgm id → 中文简介），没有就是空的
+    zh = {}
+    _zhp = cfg.w("summary_zh.json")
+    if _zhp.exists():
+        try:
+            zh = json.loads(_zhp.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            zh = {}
     con = sqlite3.connect(BGM)
     dirs = sorted(d for d in os.listdir(VFS) if os.path.isdir(os.path.join(VFS, d)))
     print("虚拟库 %s，%d 个番目录%s\n" % (VFS, len(dirs), "（**dry-run，不写文件**）" if dry else "（写入）"))
@@ -191,7 +206,7 @@ def main(args=None):
             st["无ini"] += 1
             continue
         sid = int(m.group(1))
-        res = nfo_series(con, sid)
+        res = nfo_series(con, sid, zh.get(str(sid)))
         if not res:
             st["无条目"] += 1
             miss.append((d, sid, "条目不存在"))

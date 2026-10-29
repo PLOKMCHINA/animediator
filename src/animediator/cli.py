@@ -45,6 +45,7 @@ COMMANDS = {
     "assign":     ("人工指定：某个目录对应哪部作品", "animediator.assign:main"),
     "undo":       ("回滚：从备份还原条目归属或整库", "animediator.undo:main"),
     "verify":     ("体检：虚拟库的链接是否还指向存在的源文件", "animediator.verify:main"),
+    "localize":   ("翻译：把非中文简介翻成中文并缓存", "animediator.localize:main"),
     "recheck":    ("复核：把被误判成特典的正片找回来", "animediator.recheck:main"),
     "split":      ("拆分：一个目录里装了两季的，按模型结论拆开", "animediator.split:main"),
     "overflow":   ("重排：集号溢出的再判一次", "animediator.overflow:main"),
@@ -67,7 +68,7 @@ COMMANDS = {
 GROUPS = {
     "setup": ("首次配置与自检", ["init", "config", "doctor", "status", "completions"]),
     "lib": ("整理媒体库：扫描、认片、归库、出库",
-            ["scan", "identify", "resolve", "rulematch", "assign", "undo", "verify", "recheck", "split", "overflow",
+            ["scan", "identify", "resolve", "rulematch", "assign", "undo", "verify", "localize", "recheck", "split", "overflow",
              "reresolve", "reresolve-search", "apply",
              "materialize", "nfo"]),
     "index": ("维护离线索引（番组计划数据）",
@@ -145,6 +146,11 @@ def _add_command_args(sp, name: str) -> None:
 
     elif name == "verify":
         sp.add_argument("--sample", type=int, metavar="N", help="断链最多列几条，默认 20")
+
+    elif name == "localize":
+        sp.add_argument("--stats", action="store_true", help="只统计简介语言，不调模型")
+        sp.add_argument("--force", action="store_true", help="已有缓存也重翻")
+        sp.add_argument("--limit", type=int, metavar="N", help="这次最多翻几部，试跑用")
 
     elif name == "completions":
         sp.add_argument("shell", nargs="?", choices=["bash", "zsh"], default="bash",

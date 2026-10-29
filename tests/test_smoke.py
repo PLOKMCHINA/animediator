@@ -716,5 +716,43 @@ def test_status_width_pads_cjk():
     assert _width(_pad("scan", 10)) == 10
 
 
+def test_localize_detects_language():
+    """简介语言判断：日文假名、中文汉字、英文各自占优的情况。"""
+    from animediator.localize import detect
+    assert detect("大好きな家族がいて、親友がいて、時には笑い、時には泣く") == "日文"
+    assert detect("普通的高中二年级学生鹿目圆，与家人和好友过着平凡的日子。") == "中文"
+    assert detect("A small town doctor gets involved in show business.") == "英文"
+    assert detect("") == "空"
+    assert detect(None) == "空"
+
+
+def test_nfo_series_prefers_chinese_summary():
+    """NFO 的简介优先用翻译结果，没翻译才用原文。"""
+    import sqlite3
+    from animediator.nfo import nfo_series
+
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE subject (id INTEGER PRIMARY KEY, name TEXT, "
+                "name_cn TEXT, summary TEXT, date TEXT, score REAL, rank INT, tags TEXT)")
+    con.execute("INSERT INTO subject VALUES (1,'魔法少女まどか☆マギカ','魔法少女小圆',"
+                "'大好きな家族がいて、親友がいて','2011-01-07',8.6,1,'魔法少女')")
+    # nfo_series 还会读演职员和角色，测试里给空表就够
+    con.execute("CREATE TABLE subject_person (subject_id INT, person_id INT, position INT)")
+    con.execute("CREATE TABLE person (id INT, name TEXT, name_cn TEXT)")
+    con.execute("CREATE TABLE staff_name (id INT, cn TEXT, cat TEXT, scope TEXT)")
+    con.execute("CREATE TABLE subject_character (subject_id INT, character_id INT, ord INT)")
+    con.execute("CREATE TABLE character (id INT, name TEXT, name_cn TEXT)")
+    con.execute("CREATE TABLE person_character (person_id INT, character_id INT, subject_id INT)")
+    con.commit()
+
+    xml, _ = nfo_series(con, 1)
+    assert "大好きな家族" in xml, "没翻译时应当用原文"
+
+    xml, _ = nfo_series(con, 1, "有最爱的家人，有挚友。")
+    assert "有最爱的家人" in xml
+    assert "大好きな家族" not in xml, "有译文时不该再出现原文"
+    assert "<title>魔法少女小圆</title>" in xml, "标题始终优先中文名"
+
+
 if __name__ == "__main__":
     sys.exit(_main())
