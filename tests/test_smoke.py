@@ -535,5 +535,134 @@ def test_is_rotational_handles_partitions():
     assert is_rotational("/definitely/not/here") is True
 
 
+def test_undo_finds_both_snapshot_namings():
+    """整库快照认两种命名，按时间从新到旧。
+
+    早先 apply 写的是 `<库>.bak-<时间戳>`，现在写 `<库>.<时间戳>.bak`。
+    只认一种的话，用户手上的旧快照就成了孤儿。
+    """
+    import time as _t
+    from pathlib import Path
+    from animediator.config import Config
+    from animediator import undo
+
+    with tempfile.TemporaryDirectory() as d:
+        work = Path(d) / "work"
+        work.mkdir()
+        cfg = Config({"work": str(work), "data": str(Path(d) / "data"),
+                      "vfs": str(Path(d) / "vfs")})
+        db_name = os.path.basename(str(cfg.db))
+        (work / ("%s.20260101-010101.bak" % db_name)).write_bytes(b"x")
+        (work / ("%s.bak-20260202-020202" % db_name)).write_bytes(b"x")
+        (work / ("%s.20260303-030303.bak" % db_name)).write_bytes(b"x")
+        (work / "unrelated.db").write_bytes(b"x")
+
+        got = undo._snapshots(cfg)
+        names = [g["name"] for g in got]
+        assert len(got) == 3, names
+        assert "unrelated.db" not in names
+        # 最新的排最前
+        assert "20260303-030303" in names[0]
+        assert "20260101-010101" in names[-1]
+
+
+def test_undo_rejects_broken_snapshot():
+    """读不了的快照不能拿去覆盖当前库。"""
+    from animediator import undo
+    with tempfile.TemporaryDirectory() as d:
+        bad = os.path.join(d, "broken.bak")
+        open(bad, "wb").write(b"this is not a sqlite file" * 20)
+        ok, info = undo._integrity(bad)
+        assert ok is False
+
+
+def test_undo_restores_bgm_id_only():
+    """--bgm 只把 bgm_id 一列按备份还原，别的字段不动。"""
+    import json as _j
+    import sqlite3
+    from pathlib import Path
+    from animediator.config import Config
+    from animediator import undo
+
+    with tempfile.TemporaryDirectory() as d:
+        work = Path(d) / "work"
+        work.mkdir()
+        cfg = Config({"work": str(work), "data": str(Path(d) / "data"),
+                      "vfs": str(Path(d) / "vfs")})
+        con = sqlite3.connect(str(cfg.db))
+        con.execute("CREATE TABLE unit (uid INTEGER PRIMARY KEY, unit TEXT, "
+                    "bgm_id INTEGER, name_cn TEXT)")
+        con.executemany("INSERT INTO unit VALUES (?,?,?,?)", [
+            (1, "A", 265, "改过的名字"), (2, "B", 265, "改过的名字")])
+        con.commit()
+        con.close()
+
+        bk = work / "unit_bgm_backup.20260101-010101.json"
+        bk.write_text(_j.dumps([{"uid": 1, "bgm_id": 793},
+                                {"uid": 2, "bgm_id": 793}]), encoding="utf-8")
+
+        assert undo._restore_bgm(cfg, bk) == 0
+        con = sqlite3.connect(str(cfg.db))
+        rows = dict(con.execute("SELECT uid, bgm_id FROM unit"))
+        names = {r[0] for r in con.execute("SELECT name_cn FROM unit")}
+        con.close()
+        assert rows == {1: 793, 2: 793}
+        assert names == {"改过的名字"}, "只该动 bgm_id，别的列不能被改"
+
+
+def test_verify_maps_container_paths():
+    """虚拟库的链接写的是容器路径，验存在性要映射回宿主路径。"""
+    from animediator.config import Config
+    from animediator.verify import host_path
+
+    cfg = Config({
+        "work": "/tmp/x/work", "data": "/tmp/x/data", "vfs": "/tmp/x/vfs",
+        "media": {"SDA": {"root": "/mnt/disk-a", "container": "/media/anime2"},
+                  "SDB": {"root": "/mnt/disk-b", "container": "/media/anime1"}},
+    })
+    assert host_path("/media/anime2/番/01.mkv", cfg) == "/mnt/disk-a/番/01.mkv"
+    assert host_path("/media/anime1/番/01.mkv", cfg) == "/mnt/disk-b/番/01.mkv"
+    # 映射不上就原样返回，不能凭空编一个路径
+    assert host_path("/elsewhere/01.mkv", cfg) == "/elsewhere/01.mkv"
+
+
+def test_verify_detects_dead_links():
+    """断链要能报出来，并且退出码非零。
+
+    虚拟库里全是符号链接，源文件没了链接就断；Jellyfin 里条目还在、点开播不了，
+    它自己不一定报错，所以需要这个检查。
+    """
+    from pathlib import Path
+    from animediator import config as cfgmod
+    from animediator import verify
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        src = d / "disk" / "番"
+        src.mkdir(parents=True)
+        (src / "真文件.mkv").write_text("x")
+
+        vfs = d / "vfs" / "某番" / "Season 01"
+        vfs.mkdir(parents=True)
+        os.symlink(str(src / "真文件.mkv"), str(vfs / "某番 - S01E01.mkv"))
+        os.symlink(str(src / "没有这个.mkv"), str(vfs / "某番 - S01E02.mkv"))
+
+        cfgp = d / "animediator.json"
+        cfgp.write_text(__import__("json").dumps({
+            "work": str(d / "work"), "data": str(d / "data"),
+            "vfs": str(d / "vfs"),
+            "media": {"SDA": {"root": str(d / "disk")}},
+        }), encoding="utf-8")
+        cfgmod.load(str(cfgp))
+
+        rc = verify.main(type("A", (), {"sample": 5})())
+        assert rc == 1, "有断链时应当返回 1"
+
+        # 把断链删掉，剩下的应当全好
+        os.unlink(str(vfs / "某番 - S01E02.mkv"))
+        rc = verify.main(type("A", (), {"sample": 5})())
+        assert rc == 0, "没有断链时应当返回 0"
+
+
 if __name__ == "__main__":
     sys.exit(_main())

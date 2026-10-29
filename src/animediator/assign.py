@@ -31,12 +31,20 @@ def _snapshot(cfg, con) -> str:
     """改动前留一份能回滚的东西。"""
     ts = time.strftime("%Y%m%d-%H%M%S")
     snap = cfg.w("animediator.db.%s.bak" % ts)
+    # 同一秒跑两次会撞名，撞了就把前一份覆盖掉 —— 加个序号避开
+    n = 2
+    while snap.exists():
+        snap = cfg.w("animediator.db.%s-%d.bak" % (ts, n))
+        n += 1
     shutil.copy2(cfg.db, snap)
     rows = [dict(r) for r in con.execute(
         "SELECT uid, disk, unit, bgm_id, src, conf FROM unit")]
-    bk = cfg.w("unit_bgm_backup.json")
-    if not bk.exists():
-        bk.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
+    bk = cfg.w("unit_bgm_backup.%s.json" % ts)
+    n = 2
+    while bk.exists():
+        bk = cfg.w("unit_bgm_backup.%s-%d.json" % (ts, n))
+        n += 1
+    bk.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
     return str(snap)
 
 

@@ -42,6 +42,8 @@ COMMANDS = {
     "resolve":    ("归库：有序校验，把文件对到 bgm 条目", "animediator.resolve:main"),
     "rulematch":  ("降级匹配：不调模型，只用目录名查索引", "animediator.rulematch:main"),
     "assign":     ("人工指定：某个目录对应哪部作品", "animediator.assign:main"),
+    "undo":       ("回滚：从备份还原条目归属或整库", "animediator.undo:main"),
+    "verify":     ("体检：虚拟库的链接是否还指向存在的源文件", "animediator.verify:main"),
     "recheck":    ("复核：把被误判成特典的正片找回来", "animediator.recheck:main"),
     "split":      ("拆分：一个目录里装了两季的，按模型结论拆开", "animediator.split:main"),
     "overflow":   ("重排：集号溢出的再判一次", "animediator.overflow:main"),
@@ -64,7 +66,7 @@ COMMANDS = {
 GROUPS = {
     "setup": ("首次配置与自检", ["init", "config", "doctor", "completions"]),
     "lib": ("整理媒体库：扫描、认片、归库、出库",
-            ["scan", "identify", "resolve", "rulematch", "assign", "recheck", "split", "overflow",
+            ["scan", "identify", "resolve", "rulematch", "assign", "undo", "verify", "recheck", "split", "overflow",
              "reresolve", "reresolve-search", "apply",
              "materialize", "nfo"]),
     "index": ("维护离线索引（番组计划数据）",
@@ -130,6 +132,18 @@ def _add_command_args(sp, name: str) -> None:
         sp.add_argument("--search", metavar="关键词", help="在索引里搜候选，不写库")
         sp.add_argument("--bgm", type=int, metavar="ID", help="指定 bgm 条目 id")
         sp.add_argument("--all", action="store_true", help="命中多个单元时全部应用")
+
+    elif name == "undo":
+        sp.add_argument("--list", action="store_true", help="列出可用的备份与快照")
+        sp.add_argument("--snapshot", nargs="?", const=True, metavar="文件",
+                        help="整库回滚；不给值或配 --latest 用最近一份")
+        sp.add_argument("--latest", action="store_true", help="用最近一份快照")
+        sp.add_argument("--bgm", action="store_true", help="只还原 bgm_id 一列")
+        sp.add_argument("--index", type=int, help="配合 --bgm，用第几份备份（0 = 最近）")
+        sp.add_argument("target", nargs="?", help="快照文件名（可写片段）")
+
+    elif name == "verify":
+        sp.add_argument("--sample", type=int, metavar="N", help="断链最多列几条，默认 20")
 
     elif name == "completions":
         sp.add_argument("shell", nargs="?", choices=["bash", "zsh"], default="bash",

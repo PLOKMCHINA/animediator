@@ -7,6 +7,7 @@
    这是整个工程里最重要的安全网 —— 它只改 unit.bgm_id 一列，不动任何文件。
    备份：把改动前的全部 (uid, unit, bgm_id) 写到 work/unit_bgm_backup.json
    （json 备份 + 整库快照，备份已存在就跳过；`--dry-run` 时两者都不做）。
+   回滚用 `animediator lib undo`。
 """
 import json
 import os
@@ -76,15 +77,21 @@ def main(args=None):
     con.row_factory = sqlite3.Row
 
     # ── ① 备份全表 ──
-    if not os.path.exists(BK):
-        data = [dict(r) for r in con.execute(
-            "SELECT uid, unit, disk, bgm_id, aid, name_cn, season FROM unit")]
-        json.dump(data, open(BK, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-        print("备份 %d 行 → %s" % (len(data), BK))
-    else:
-        print("备份已存在，跳过（%s）" % BK)
-    # 顺手留一份整库快照
-    snap = "%s.bak-%s" % (DB, time.strftime("%Y%m%d-%H%M%S"))
+    # 每次操作都留一份带时间戳的，保留的是「这次改动之前」的状态。
+    # 曾经只在文件不存在时写，结果那份永远是第一次动库之前的样子，
+    # lib undo 拿去还原等于退到最初，撤销不了上一次。
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    bk = cfg.w("unit_bgm_backup.%s.json" % ts)
+    data = [dict(r) for r in con.execute(
+        "SELECT uid, unit, disk, bgm_id, aid, name_cn, season FROM unit")]
+    json.dump(data, open(bk, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    print("备份 %d 行 → %s" % (len(data), bk.name))
+    # 顺手留一份整库快照（命名和 assign 一致，lib undo 才认得出来）
+    snap = "%s.%s.bak" % (DB, ts)
+    n = 2
+    while os.path.exists(snap):
+        snap = "%s.%s-%d.bak" % (DB, ts, n)
+        n += 1
     shutil.copy2(DB, snap)
     print("整库快照 → %s" % snap)
 
